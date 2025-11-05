@@ -15,6 +15,7 @@ from bluez_peripheral.gatt.descriptor import DescriptorFlags as DescFlags
 from dbus_fast.constants import MessageType
 from dbus_fast import Variant
 from dataclasses import dataclass
+from typing import Optional
 
 _hid_service_singleton = None  # set inside start_hid()
 
@@ -488,6 +489,8 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
     powered_state = True
     suspend_power_handler = 0
     power_lock = asyncio.Lock()
+    bluez_available_state = True
+    watchdog_task: Optional[asyncio.Task] = None
 
     def _remove_task(task):
         with contextlib.suppress(ValueError):
@@ -615,6 +618,37 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
                 print("[hid] adapter powered off — suspending HID")
                 await _bring_down()
 
+    async def _handle_bluez_recovery():
+        nonlocal powered_state, bluez_available_state
+        poll = 2.0
+        while True:
+            await asyncio.sleep(poll)
+            try:
+                available = await is_bluez_available(bus)
+            except Exception:
+                available = False
+
+            if available and not bluez_available_state:
+                async with power_lock:
+                    if not bluez_available_state:
+                        try:
+                            await _register_everything()
+                            with contextlib.suppress(Exception):
+                                hid.release_all()
+                            powered_state = True
+                            bluez_available_state = True
+                            print("[hid] BlueZ available — HID restored")
+                        except Exception as e:
+                            print(f"[hid] BlueZ recovery failed: {e}")
+                            bluez_available_state = False
+            elif not available and bluez_available_state:
+                async with power_lock:
+                    if bluez_available_state:
+                        print("[hid] BlueZ unavailable — bringing HID down")
+                        await _bring_down()
+                        powered_state = False
+                        bluez_available_state = False
+
     await _register_everything()
 
     # Make sure nothing is logically "held" at startup
@@ -622,6 +656,9 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
         hid.release_all()
 
     powered_state = True
+    bluez_available_state = True
+
+    watchdog_task = asyncio.create_task(_handle_bluez_recovery(), name="hid_watch_bluez")
 
     def _adapter_power_handler(msg):
         if msg.message_type is not MessageType.SIGNAL:
@@ -650,5 +687,9 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
     async def shutdown():
         bus.remove_message_handler(adapter_power_handler)
         await _bring_down()
+        if watchdog_task is not None:
+            watchdog_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watchdog_task
 
     return runtime, shutdown
