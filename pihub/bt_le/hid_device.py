@@ -14,10 +14,28 @@ from bluez_peripheral.gatt.descriptor import DescriptorFlags as DescFlags
 
 from dbus_fast.constants import MessageType
 from dbus_fast import Variant
+from dbus_fast.errors import DBusError
 from dataclasses import dataclass
 from typing import Optional
 
 _hid_service_singleton = None  # set inside start_hid()
+
+
+class BlueZUnavailableError(RuntimeError):
+    """Raised when BlueZ disappears from the system bus."""
+
+
+def _is_bluez_gone(exc: Exception) -> bool:
+    if not isinstance(exc, DBusError):
+        return False
+    err_type = getattr(exc, "type", "") or getattr(exc, "name", "")
+    if err_type in {
+        "org.freedesktop.DBus.Error.Disconnected",
+        "org.freedesktop.DBus.Error.ServiceUnknown",
+    }:
+        return True
+    text = (getattr(exc, "text", "") or str(exc)).lower()
+    return "disconnected" in text or "serviceunknown" in text
 
 # --------------------------
 # Device identity / advert
@@ -124,10 +142,15 @@ async def trust_device(bus, device_path):
         pass
         
 async def _get_managed_objects(bus):
-    root_xml = await bus.introspect("org.bluez", "/")
-    root = bus.get_proxy_object("org.bluez", "/", root_xml)
-    om = root.get_interface("org.freedesktop.DBus.ObjectManager")
-    return await om.call_get_managed_objects()
+    try:
+        root_xml = await bus.introspect("org.bluez", "/")
+        root = bus.get_proxy_object("org.bluez", "/", root_xml)
+        om = root.get_interface("org.freedesktop.DBus.ObjectManager")
+        return await om.call_get_managed_objects()
+    except DBusError as e:
+        if _is_bluez_gone(e):
+            raise BlueZUnavailableError() from e
+        raise
 
 async def wait_for_any_connection(bus, poll_interval=0.25):
     """Return Device1 path once Connected=True (we then wait for ServicesResolved)."""
@@ -135,7 +158,10 @@ async def wait_for_any_connection(bus, poll_interval=0.25):
     fut = loop.create_future()
 
     # quick poll
-    objs = await _get_managed_objects(bus)
+    try:
+        objs = await _get_managed_objects(bus)
+    except BlueZUnavailableError:
+        objs = {}
     for path, props in objs.items():
         dev = props.get("org.bluez.Device1")
         if dev and _get_bool(dev.get("Connected", False)):
@@ -160,7 +186,10 @@ async def wait_for_any_connection(bus, poll_interval=0.25):
             if fut.done():
                 return await fut
             # polling fallback
-            objs = await _get_managed_objects(bus)
+            try:
+                objs = await _get_managed_objects(bus)
+            except BlueZUnavailableError:
+                objs = {}
             for path, props in objs.items():
                 dev = props.get("org.bluez.Device1")
                 if dev and _get_bool(dev.get("Connected", False)):
@@ -174,7 +203,11 @@ async def wait_until_services_resolved(bus, device_path, timeout_s=30, poll_inte
     import time
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        objs = await _get_managed_objects(bus)
+        try:
+            objs = await _get_managed_objects(bus)
+        except BlueZUnavailableError:
+            await asyncio.sleep(poll_interval)
+            continue
         dev = objs.get(device_path, {}).get("org.bluez.Device1")
         if dev and _get_bool(dev.get("ServicesResolved", False)):
             return True
@@ -201,7 +234,10 @@ async def wait_for_disconnect(bus, device_path, poll_interval=0.5):
             if fut.done():
                 await fut
                 return
-            objs = await _get_managed_objects(bus)
+            try:
+                objs = await _get_managed_objects(bus)
+            except BlueZUnavailableError:
+                return
             dev = objs.get(device_path, {}).get("org.bluez.Device1")
             if not dev or not _get_bool(dev.get("Connected", False)):
                 return
