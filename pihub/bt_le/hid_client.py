@@ -1,6 +1,4 @@
-# ============================================
-# File: pihub/bt_le/hid_client.py  (REPLACE)
-# ============================================
+"""Translate symbolic key names into HID payloads."""
 from __future__ import annotations
 
 import os
@@ -12,12 +10,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 Usage = Literal["keyboard", "consumer"]
 
 class HIDClient:
-    """
-    Encodes symbolic keys to HID payloads and calls transport.notify_*.
-    Transport must provide:
-      - notify_keyboard(report: bytes)
-      - notify_consumer(usage_id: int, pressed: bool)
-    """
+    """Encode symbolic keys to HID payloads and forward to the transport."""
     def __init__(self, *, hid, debug: bool = False) -> None:
         self._hid = hid
         self._debug = debug or (os.getenv("DEBUG_BT", "0").lower() in {"1","true","yes","on"})
@@ -25,6 +18,7 @@ class HIDClient:
 
     # ---------- edge-level API ----------
     def key_down(self, *, usage: Usage, code: str) -> None:
+        """Send a logical key-down edge."""
         if usage == "keyboard":
             down = self._encode_keyboard_down(code)
             if self._debug:
@@ -38,6 +32,7 @@ class HIDClient:
                 self._hid.notify_consumer(usage_id, True)
 
     def key_up(self, *, usage: Usage, code: str) -> None:
+        """Send a logical key-up edge."""
         if usage == "keyboard":
             if self._debug:
                 print(f'[bt] keyboard "{code}" up')
@@ -51,6 +46,7 @@ class HIDClient:
 
     # ---------- tap API (macros/WS) ----------
     async def send_key(self, *, usage: Usage, code: str, hold_ms: int = 40) -> None:
+        """Tap a key by sending down → delay → up."""
         # tap = down + delay + up
         self.key_down(usage=usage, code=code)
         await asyncio.sleep(max(0, hold_ms) / 1000.0)
@@ -63,6 +59,7 @@ class HIDClient:
         default_hold_ms: int = 40,
         inter_delay_ms: int = 400,
     ) -> None:
+        """Execute a timed macro sequence."""
         for step in steps:
             if "wait_ms" in step:  # idle delay
                 await asyncio.sleep(max(0, int(step["wait_ms"])) / 1000.0)

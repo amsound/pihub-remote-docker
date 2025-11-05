@@ -1,4 +1,5 @@
-# pihub/app.py
+"""Application entry point wiring BLE, Home Assistant and USB input."""
+
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +19,9 @@ from .input_unifying import UnifyingReader
 from .bt_le.controller import BTLEController
 from .macros import MACROS
 
+
 async def main() -> None:
+    """Run the PiHub control loop until interrupted."""
     cfg = Config.load()
     token = cfg.load_token()
 
@@ -97,11 +100,9 @@ async def main() -> None:
     )
 
     ws_task = asyncio.create_task(ws.start(), name="ha_ws")
-    try:
-        await bt.start()
-    except Exception as exc:
-        print(f"[app] failed to start BLE controller: {exc}", flush=True)
-        raise SystemExit(1)
+    await bt.start()
+    if not await bt.wait_ready(timeout=5.0):
+        print("[app] BLE adapter not yet available; continuing without HID", flush=True)
     await reader.start()
 
     stop = asyncio.Event()
