@@ -1,4 +1,5 @@
-# pihub/config.py
+"""Configuration helpers for environment-driven settings."""
+
 from __future__ import annotations
 
 import os

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""BlueZ HID service definitions and lifecycle helpers."""
+
 import asyncio
 import os
 import contextlib
@@ -457,7 +459,11 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
 
     # Adapter
     adapter_name = getattr(config, "adapter_name", getattr(config, "adapter", "hci0"))
-    xml = await bus.introspect("org.bluez", f"/org/bluez/{adapter_name}")
+    try:
+        xml = await bus.introspect("org.bluez", f"/org/bluez/{adapter_name}")
+    except Exception as exc:
+        raise RuntimeError(f"Bluetooth adapter {adapter_name} not found") from exc
+
     proxy = bus.get_proxy_object("org.bluez", f"/org/bluez/{adapter_name}", xml)
     adapter = Adapter(proxy)
     await adapter.set_alias(device_name)

@@ -1,4 +1,5 @@
-# pihub/dispatcher.py
+"""Route remote key events to BLE or Home Assistant actions."""
+
 from __future__ import annotations
 
 import asyncio
@@ -54,10 +55,12 @@ class Dispatcher:
 
     # Activity comes from HA (ha_ws)
     async def on_activity(self, text: str) -> None:
+        """Record the current activity reported by Home Assistant."""
         self._activity = text
 
     # USB edges come from UnifyingReader
     async def on_usb_edge(self, rem_key: str, edge: str) -> None:
+        """Handle a key edge originating from the USB receiver."""
         # Stop any repeat when the key goes up
         if edge == "up":
             await self._stop_repeat(rem_key)

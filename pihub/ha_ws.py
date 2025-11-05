@@ -1,4 +1,5 @@
-# pihub/ha_ws.py
+"""Home Assistant WebSocket integration with resilient reconnects."""
+
 from __future__ import annotations
 
 import asyncio
@@ -71,6 +72,7 @@ class HAWS:
                     continue
 
     async def stop(self) -> None:
+        """Signal the client to stop and close the socket."""
         self._stopping.set()
         await self._close_ws()
 

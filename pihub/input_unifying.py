@@ -1,3 +1,5 @@
+"""Handle Logitech Unifying keyboards with automatic reconnection."""
+
 from __future__ import annotations
 
 import asyncio
@@ -44,11 +46,13 @@ class UnifyingReader:
 
     # ── Public API ───────────────────────────────────────────────────────────
     async def start(self) -> None:
+        """Begin watching the configured input device."""
         if self._task is None:
             self._stop.clear()
             self._task = asyncio.create_task(self._run(), name="unifying_reader")
 
     async def stop(self) -> None:
+        """Stop watching the input device and wait for shutdown."""
         if self._task:
             self._stop.set()
             self._task.cancel()

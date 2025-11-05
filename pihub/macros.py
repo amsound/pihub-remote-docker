@@ -1,4 +1,5 @@
-# pihub/macros.py
+"""Predefined macro sequences for BLE HID playback."""
+
 from __future__ import annotations
 from typing import TypedDict, Literal, List, Dict, Union
 
