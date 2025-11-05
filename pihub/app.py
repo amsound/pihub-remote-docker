@@ -97,7 +97,11 @@ async def main() -> None:
     )
 
     ws_task = asyncio.create_task(ws.start(), name="ha_ws")
-    await bt.start()
+    try:
+        await bt.start()
+    except Exception as exc:
+        print(f"[app] failed to start BLE controller: {exc}", flush=True)
+        raise SystemExit(1)
     await reader.start()
 
     stop = asyncio.Event()

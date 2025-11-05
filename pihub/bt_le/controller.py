@@ -124,6 +124,7 @@ class BTLEController:
         except Exception as e:
             self._available = False
             print(f"[bt] start failed: {e}", flush=True)
+            raise
 
     async def stop(self) -> None:
         await self._tx.stop()
