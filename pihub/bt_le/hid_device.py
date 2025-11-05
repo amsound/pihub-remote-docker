@@ -14,28 +14,9 @@ from bluez_peripheral.gatt.descriptor import DescriptorFlags as DescFlags
 
 from dbus_fast.constants import MessageType
 from dbus_fast import Variant
-from dbus_fast.errors import DBusError
 from dataclasses import dataclass
-from typing import Optional
 
 _hid_service_singleton = None  # set inside start_hid()
-
-
-class BlueZUnavailableError(RuntimeError):
-    """Raised when BlueZ disappears from the system bus."""
-
-
-def _is_bluez_gone(exc: Exception) -> bool:
-    if not isinstance(exc, DBusError):
-        return False
-    err_type = getattr(exc, "type", "") or getattr(exc, "name", "")
-    if err_type in {
-        "org.freedesktop.DBus.Error.Disconnected",
-        "org.freedesktop.DBus.Error.ServiceUnknown",
-    }:
-        return True
-    text = (getattr(exc, "text", "") or str(exc)).lower()
-    return "disconnected" in text or "serviceunknown" in text
 
 # --------------------------
 # Device identity / advert
@@ -142,15 +123,10 @@ async def trust_device(bus, device_path):
         pass
         
 async def _get_managed_objects(bus):
-    try:
-        root_xml = await bus.introspect("org.bluez", "/")
-        root = bus.get_proxy_object("org.bluez", "/", root_xml)
-        om = root.get_interface("org.freedesktop.DBus.ObjectManager")
-        return await om.call_get_managed_objects()
-    except DBusError as e:
-        if _is_bluez_gone(e):
-            raise BlueZUnavailableError() from e
-        raise
+    root_xml = await bus.introspect("org.bluez", "/")
+    root = bus.get_proxy_object("org.bluez", "/", root_xml)
+    om = root.get_interface("org.freedesktop.DBus.ObjectManager")
+    return await om.call_get_managed_objects()
 
 async def wait_for_any_connection(bus, poll_interval=0.25):
     """Return Device1 path once Connected=True (we then wait for ServicesResolved)."""
@@ -158,10 +134,7 @@ async def wait_for_any_connection(bus, poll_interval=0.25):
     fut = loop.create_future()
 
     # quick poll
-    try:
-        objs = await _get_managed_objects(bus)
-    except BlueZUnavailableError:
-        objs = {}
+    objs = await _get_managed_objects(bus)
     for path, props in objs.items():
         dev = props.get("org.bluez.Device1")
         if dev and _get_bool(dev.get("Connected", False)):
@@ -186,10 +159,7 @@ async def wait_for_any_connection(bus, poll_interval=0.25):
             if fut.done():
                 return await fut
             # polling fallback
-            try:
-                objs = await _get_managed_objects(bus)
-            except BlueZUnavailableError:
-                objs = {}
+            objs = await _get_managed_objects(bus)
             for path, props in objs.items():
                 dev = props.get("org.bluez.Device1")
                 if dev and _get_bool(dev.get("Connected", False)):
@@ -203,11 +173,7 @@ async def wait_until_services_resolved(bus, device_path, timeout_s=30, poll_inte
     import time
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        try:
-            objs = await _get_managed_objects(bus)
-        except BlueZUnavailableError:
-            await asyncio.sleep(poll_interval)
-            continue
+        objs = await _get_managed_objects(bus)
         dev = objs.get(device_path, {}).get("org.bluez.Device1")
         if dev and _get_bool(dev.get("ServicesResolved", False)):
             return True
@@ -234,10 +200,7 @@ async def wait_for_disconnect(bus, device_path, poll_interval=0.5):
             if fut.done():
                 await fut
                 return
-            try:
-                objs = await _get_managed_objects(bus)
-            except BlueZUnavailableError:
-                return
+            objs = await _get_managed_objects(bus)
             dev = objs.get(device_path, {}).get("org.bluez.Device1")
             if not dev or not _get_bool(dev.get("Connected", False)):
                 return
@@ -361,7 +324,6 @@ class HIDService(Service):
         super().__init__("1812", True)
         self._proto = bytearray([1])  # Report Protocol
         self._link_ready: bool = False
-        self._available: bool = False
 
     # -------- subscription helpers --------
     def _is_subscribed(self, char) -> bool:
@@ -487,7 +449,7 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
     - config.appearance    : GAP appearance (int, default 0x03C1)
     """
     device_name = getattr(config, "device_name", None) or os.uname().nodename
-    appearance = int(getattr(config, "appearance", APPEARANCE))
+    appearance  = int(getattr(config, "appearance", APPEARANCE))
 
     bus = await get_message_bus()
     if not await is_bluez_available(bus):
@@ -495,21 +457,20 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
 
     # Adapter
     adapter_name = getattr(config, "adapter_name", getattr(config, "adapter", "hci0"))
-    adapter_path = f"/org/bluez/{adapter_name}"
-    xml = await bus.introspect("org.bluez", adapter_path)
-    proxy = bus.get_proxy_object("org.bluez", adapter_path, xml)
+    xml = await bus.introspect("org.bluez", f"/org/bluez/{adapter_name}")
+    proxy = bus.get_proxy_object("org.bluez", f"/org/bluez/{adapter_name}", xml)
     adapter = Adapter(proxy)
     await adapter.set_alias(device_name)
 
     # Agent
     agent = NoIoAgent()
     await agent.register(bus, default=True)
-
+    
     # Services
     dis = DeviceInfoService()
     bas = BatteryService(initial_level=100)
     hid = HIDService()
-
+    
     global _hid_service_singleton
     _hid_service_singleton = hid
 
@@ -517,81 +478,44 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
     app.add_service(dis)
     app.add_service(bas)
     app.add_service(hid)
-
-    loop = asyncio.get_running_loop()
-    tasks: list[asyncio.Task] = []
-    advert = None
-    runtime = None
-    powered_state = True
-    suspend_power_handler = 0
-    power_lock = asyncio.Lock()
-    bluez_available_state = True
-    watchdog_task: Optional[asyncio.Task] = None
-
-    def _remove_task(task):
-        with contextlib.suppress(ValueError):
-            tasks.remove(task)
-
-    async def _cancel_tasks():
-        for t in list(tasks):
-            t.cancel()
-        if tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(*tasks, return_exceptions=True)
-        tasks.clear()
-
+    
     async def _power_cycle_adapter():
-        nonlocal suspend_power_handler
         try:
-            suspend_power_handler += 1
             await adapter.set_powered(False)
             await asyncio.sleep(0.4)
             await adapter.set_powered(True)
             await asyncio.sleep(0.8)
         except Exception as e:
             print(f"[hid] Bluetooth adapter power-cycle failed: {e}")
-        finally:
-            if suspend_power_handler > 0:
-                suspend_power_handler -= 1
-
-    async def _bring_down():
-        nonlocal advert
-        await _cancel_tasks()
-        if advert is not None:
-            with contextlib.suppress(Exception):
-                await _adv_unregister(bus, advert)
-            advert = None
-        with contextlib.suppress(Exception):
-            await app.unregister()
-        with contextlib.suppress(Exception):
-            hid.release_all()
-        hid._link_ready = False
-        hid._available = False
-
-    async def _register_everything():
-        nonlocal advert, runtime
-
-        await _cancel_tasks()
-        if advert is not None:
-            with contextlib.suppress(Exception):
-                await _adv_unregister(bus, advert)
-            advert = None
-        with contextlib.suppress(Exception):
-            await app.unregister()
-
-        # --- Register GATT application (with one retry) ---
+    
+    # --- Register GATT application (with one retry) ---
+    try:
+        await app.register(bus, adapter=adapter)
+    except Exception as e:
+        print(f"[hid] BTLE service register failed: {e} — retrying after power-cycle")
+        await _power_cycle_adapter()
         try:
             await app.register(bus, adapter=adapter)
-        except Exception as e:
-            print(f"[hid] BTLE service register failed: {e} — retrying after power-cycle")
-            await _power_cycle_adapter()
-            try:
-                await app.register(bus, adapter=adapter)
-            except Exception as e2:
-                hid._available = False
-                raise RuntimeError(f"GATT application register failed after retry: {e2}") from e2
-
-        # --- Register + start advertising (with one retry) ---
+        except Exception as e2:
+            # Hard fail: do not return None
+            raise RuntimeError(f"GATT application register failed after retry: {e2}") from e2
+    
+    # --- Register + start advertising (with one retry) ---
+    advert = Advertisement(
+        localName=device_name,
+        serviceUUIDs=["1812", "180F", "180A"],
+        appearance=appearance,
+        timeout=0,
+        discoverable=True,
+    )
+    mode = await _adv_register_and_start(bus, advert)
+    if mode in ("error", "noop"):
+        print(f"[hid] advert register/start failed ({mode}) — retrying after power-cycle")
+        with contextlib.suppress(Exception):
+            await advert.unregister()
+        await _power_cycle_adapter()
+    
+        # Recreate a fresh advert object (fresh DBus path)
         advert = Advertisement(
             localName=device_name,
             serviceUUIDs=["1812", "180F", "180A"],
@@ -601,131 +525,36 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
         )
         mode = await _adv_register_and_start(bus, advert)
         if mode in ("error", "noop"):
-            print(f"[hid] advert register/start failed ({mode}) — retrying after power-cycle")
             with contextlib.suppress(Exception):
-                await advert.unregister()
-            await _power_cycle_adapter()
-
-            # Recreate a fresh advert object (fresh DBus path)
-            advert = Advertisement(
-                localName=device_name,
-                serviceUUIDs=["1812", "180F", "180A"],
-                appearance=appearance,
-                timeout=0,
-                discoverable=True,
-            )
-            mode = await _adv_register_and_start(bus, advert)
-            if mode in ("error", "noop"):
-                with contextlib.suppress(Exception):
-                    await app.unregister()
-                hid._available = False
-                raise RuntimeError(f"Advertising register failed after retry: mode={mode}")
-
-        hid._available = True
-        hid._link_ready = False
-
-        link_task = asyncio.create_task(watch_link(bus, advert, hid), name="hid_watch_link")
-        tasks.append(link_task)
-        link_task.add_done_callback(lambda t: _remove_task(t))
-
-        if runtime is not None:
-            runtime.advert = advert
-
-        print(f'[hid] advertising registered as {device_name} on {adapter_name}')
-
-    async def _handle_power_event(powered: bool):
-        nonlocal powered_state
-        async with power_lock:
-            if powered:
-                if powered_state:
-                    return
-                try:
-                    await _register_everything()
-                    with contextlib.suppress(Exception):
-                        hid.release_all()
-                    powered_state = True
-                except Exception as e:
-                    print(f"[hid] adapter power-on recovery failed: {e}")
-                    powered_state = False
-            else:
-                if not powered_state:
-                    return
-                powered_state = False
-                print("[hid] adapter powered off — suspending HID")
-                await _bring_down()
-
-    async def _handle_bluez_recovery():
-        nonlocal powered_state, bluez_available_state
-        poll = 2.0
-        while True:
-            await asyncio.sleep(poll)
-            try:
-                available = await is_bluez_available(bus)
-            except Exception:
-                available = False
-
-            if available and not bluez_available_state:
-                async with power_lock:
-                    if not bluez_available_state:
-                        try:
-                            await _register_everything()
-                            with contextlib.suppress(Exception):
-                                hid.release_all()
-                            powered_state = True
-                            bluez_available_state = True
-                            print("[hid] BlueZ available — HID restored")
-                        except Exception as e:
-                            print(f"[hid] BlueZ recovery failed: {e}")
-                            bluez_available_state = False
-            elif not available and bluez_available_state:
-                async with power_lock:
-                    if bluez_available_state:
-                        print("[hid] BlueZ unavailable — bringing HID down")
-                        await _bring_down()
-                        powered_state = False
-                        bluez_available_state = False
-
-    await _register_everything()
-
+                await app.unregister()
+            raise RuntimeError(f"Advertising register failed after retry: mode={mode}")
+    
+    print(f'[hid] advertising registered as {device_name} on {adapter_name}')
+    
+    # Start link watcher (flips _link_ready and prints concise pairing log)
+    link_task = asyncio.create_task(watch_link(bus, advert, hid), name="hid_watch_link")
+    tasks = [link_task]
+    
     # Make sure nothing is logically "held" at startup
     with contextlib.suppress(Exception):
         hid.release_all()
-
-    powered_state = True
-    bluez_available_state = True
-
-    watchdog_task = asyncio.create_task(_handle_bluez_recovery(), name="hid_watch_bluez")
-
-    def _adapter_power_handler(msg):
-        if msg.message_type is not MessageType.SIGNAL:
-            return
-        if msg.member != "PropertiesChanged" or msg.path != adapter_path:
-            return
-        if suspend_power_handler:
-            return
-        iface, changed, _ = msg.body
-        if iface != "org.bluez.Adapter1" or "Powered" not in changed:
-            return
-        new_state = _get_bool(changed["Powered"])
-        if new_state == powered_state:
-            return
-
-        def _schedule():
-            asyncio.create_task(_handle_power_event(new_state))
-
-        loop.call_soon_threadsafe(_schedule)
-
-    adapter_power_handler = _adapter_power_handler
-    bus.add_message_handler(adapter_power_handler)
-
-    runtime = HidRuntime(bus=bus, adapter=adapter, advert=advert, hid=hid, tasks=tasks)
-
+    
     async def shutdown():
-        bus.remove_message_handler(adapter_power_handler)
-        await _bring_down()
-        if watchdog_task is not None:
-            watchdog_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await watchdog_task
-
+        # stop watcher(s)
+        for t in list(tasks):
+            t.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.gather(*tasks, return_exceptions=True)
+        # Unregister advert (use your helper)
+        with contextlib.suppress(Exception):
+            await _adv_unregister(bus, advert)
+        # Unregister services
+        with contextlib.suppress(Exception):
+            await app.unregister()
+        # Release any held keys
+        with contextlib.suppress(Exception):
+            hid.release_all()
+        hid._link_ready = False
+    
+    runtime = HidRuntime(bus=bus, adapter=adapter, advert=advert, hid=hid, tasks=tasks)
     return runtime, shutdown
