@@ -99,13 +99,29 @@ async def main() -> None:
         f'activity={cfg.ha_activity}'
     )
 
+    stop = asyncio.Event()
+
+    def _monitor_ws(task: asyncio.Task) -> None:
+        if stop.is_set():
+            return
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # pragma: no cover - defensive logging
+            print(f"[app] Home Assistant task crashed: {exc!r}", flush=True)
+        else:
+            print("[app] Home Assistant task exited unexpectedly", flush=True)
+        stop.set()
+
     ws_task = asyncio.create_task(ws.start(), name="ha_ws")
+    ws_task.add_done_callback(_monitor_ws)
+
     await bt.start()
     if not await bt.wait_ready(timeout=5.0):
         print("[app] BLE adapter not yet available; continuing without HID", flush=True)
     await reader.start()
 
-    stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         with contextlib.suppress(Exception):
             asyncio.get_running_loop().add_signal_handler(sig, stop.set)

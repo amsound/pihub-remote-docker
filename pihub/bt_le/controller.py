@@ -265,8 +265,7 @@ class BTLEController:
                     raise
                 except Exception as exc:
                     self._available = False
-                    if self._debug:
-                        print(f"[bt] transport start failed: {exc}", flush=True)
+                    print(f"[bt] transport start failed: {exc}", flush=True)
                     await self._sleep_with_stop(backoff)
                     backoff = min(backoff * 2.0, 30.0)
                     continue
@@ -286,8 +285,7 @@ class BTLEController:
 
                 delay = backoff
                 backoff = min(backoff * 2.0, 30.0)
-                if self._debug:
-                    print(f"[bt] restarting after {reason}; retry in {delay:.1f}s", flush=True)
+                print(f"[bt] restarting after {reason}; retry in {delay:.1f}s", flush=True)
                 await self._sleep_with_stop(delay)
         finally:
             self._available = False

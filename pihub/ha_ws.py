@@ -61,7 +61,9 @@ class HAWS:
                 continue
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                if not self._stopping.is_set():
+                    print(f"[ws] error: {exc!r}", flush=True)
                 jitter = random.uniform(0.75, 1.25)
                 timeout = min(60.0, delay) * jitter
                 try:
@@ -138,7 +140,7 @@ class HAWS:
         await ws.send_json({"type": "auth", "access_token": self._token})
         msg = await ws.receive_json()
         if msg.get("type") != "auth_ok":
-            raise RuntimeError("auth failed")
+            raise RuntimeError(f"auth failed: {msg}")
 
     async def _seed_activity(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         """

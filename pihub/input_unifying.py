@@ -7,7 +7,7 @@ import contextlib
 import glob
 import os
 import random
-from typing import Awaitable, Callable, Dict, Optional, Set, Tuple
+from typing import Awaitable, Callable, Dict, Optional
 
 from evdev import InputDevice, ecodes
 
@@ -167,11 +167,15 @@ class UnifyingReader:
                     backoff = min(backoff * 2, 10.0)
                 else:
                     await asyncio.sleep(1.0)
-    
+
             except asyncio.CancelledError:
                 # Shutting down
                 break
-    
+
+            except Exception as exc:
+                print(f"[usb] reader error: {exc!r}", flush=True)
+                await asyncio.sleep(1.0)
+
             finally:
                 with contextlib.suppress(Exception):
                     if grabbed:
