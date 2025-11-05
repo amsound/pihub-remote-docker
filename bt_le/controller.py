@@ -112,22 +112,38 @@ class BTLEController:
     def __init__(self, *, adapter: str, device_name: str, debug: bool = False) -> None:
         self._tx = HIDTransportBLE(adapter=adapter, device_name=device_name, debug=debug)
         self._client = HIDClient(hid=self._tx, debug=debug)
+        self._available = False
 
     async def start(self) -> None:
-        await self._tx.start()
+        try:
+            await self._tx.start()
+            self._available = True
+        except asyncio.CancelledError:
+            self._available = False
+            raise
+        except Exception as e:
+            self._available = False
+            print(f"[bt] start failed: {e}", flush=True)
 
     async def stop(self) -> None:
         await self._tx.stop()
+        self._available = False
 
     # Edge-level passthroughs used by Dispatcher for true key down/up
     def key_down(self, *, usage: str, code: str) -> None:
+        if not self._available:
+            return
         self._client.key_down(usage=usage, code=code)
 
     def key_up(self, *, usage: str, code: str) -> None:
+        if not self._available:
+            return
         self._client.key_up(usage=usage, code=code)
 
     # Tap (used by WS/macros)
     async def send_key(self, *, usage: str, code: str, hold_ms: int = 40) -> None:
+        if not self._available:
+            return
         await self._client.send_key(usage=usage, code=code, hold_ms=hold_ms)
 
     async def run_macro(
@@ -137,4 +153,6 @@ class BTLEController:
         default_hold_ms: int = 40,
         inter_delay_ms: int = 400,
     ) -> None:
+        if not self._available:
+            return
         await self._client.run_macro(steps, default_hold_ms=default_hold_ms, inter_delay_ms=inter_delay_ms)
