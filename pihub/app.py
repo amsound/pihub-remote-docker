@@ -93,7 +93,11 @@ def _make_on_cmd(bt: BTLEController):
 async def main() -> None:
     """Run the PiHub control loop until interrupted."""
     cfg = Config.load()
-    token = cfg.load_token()
+    try:
+        token = cfg.load_token()
+    except RuntimeError as exc:
+        print(f"[app] Cannot start without Home Assistant token: {exc}", flush=True)
+        raise SystemExit(1) from exc
 
     bt = BTLEController(adapter=cfg.ble_adapter, device_name=cfg.ble_device_name, debug=cfg.debug_bt)
 
