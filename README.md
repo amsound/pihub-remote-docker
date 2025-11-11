@@ -95,7 +95,7 @@ services:
 | `REPEAT_INITIAL_MS`  | Global initial delay for synthetic repeats                    | `400`                              |
 | `REPEAT_RATE_MS`     | Global repeat rate                                            | `400`                              |
 
-**Fail-fast:** the app exits on startup if it can’t obtain an HA token from env or file.
+**Fail-fast:** the app exits on startup if it can’t obtain an HA token from env or file, logging `"[app] Cannot start without Home Assistant token: ..."` to point operators at the missing credential.
 
 ---
 

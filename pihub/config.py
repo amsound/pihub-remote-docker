@@ -71,7 +71,7 @@ class Config:
         )
 
     def load_token(self) -> str:
-        """Return HA token: prefer HA_TOKEN env, else read HA_TOKEN_FILE; return '' if missing."""
+        """Return the HA token from environment or configured file."""
         # 1) explicit env wins
         env_tok = (os.getenv("HA_TOKEN") or "").strip()
         if env_tok:
@@ -79,12 +79,18 @@ class Config:
 
         # 2) fall back to file
         path = (self.ha_token_file or "").strip()
+        if not path:
+            raise RuntimeError("HA token unavailable: set HA_TOKEN or provide HA_TOKEN_FILE")
+
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return f.read().strip()
-        except FileNotFoundError:
-            print(f"[config] missing HA token file: {path}", flush=True)
-            return ""
-        except Exception as e:
-            print(f"[config] failed to read HA token file {path}: {e}", flush=True)
-            return ""
+                token = f.read().strip()
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"HA token file not found: {path}") from exc
+        except OSError as exc:
+            raise RuntimeError(f"Failed to read HA token file {path}: {exc}") from exc
+
+        if not token:
+            raise RuntimeError(f"HA token file {path} is empty")
+
+        return token
