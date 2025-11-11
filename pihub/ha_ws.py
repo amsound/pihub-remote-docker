@@ -33,7 +33,7 @@ class HAWS:
         on_cmd: OnCmd,
     ) -> None:
         self._url = url
-        self._token = token or ""
+        self._token = (token or "").strip()
         self._activity_entity = activity_entity
         self._event_name = event_name
         self._on_activity = on_activity
@@ -51,6 +51,12 @@ class HAWS:
         """
         Run until stop() is called. Reconnect with exponential backoff + jitter.
         """
+        if not self._token:
+            print("[ws] missing HA access token – set HA_TOKEN or HA_TOKEN_FILE", flush=True)
+            # Stay alive until stopped, but don't spin on futile reconnect attempts.
+            await self._stopping.wait()
+            return
+
         delay = 1.0
         while not self._stopping.is_set():
             try:
@@ -147,25 +153,31 @@ class HAWS:
         Fetch current activity once; ALWAYS print + callback, then cache.
         """
         req_id = self._next_id()
-        await ws.send_json({"id": req_id, "type": "get_states"})
+        await ws.send_json({
+            "id": req_id,
+            "type": "get_state",
+            "entity_id": self._activity_entity,
+        })
         while True:
             msg = await ws.receive_json()
             if msg.get("type") == "result" and msg.get("id") == req_id and msg.get("success"):
-                states = msg.get("result") or []
-                for st in states:
-                    if st.get("entity_id") == self._activity_entity:
-                        val = str(st.get("state", "") or "").strip()
-                        if val:
-                            print(f"[activity] {val}")   # always print on (re)connect
-                            self._last_activity = val
-                            res = self._on_activity(val)
-                            if asyncio.iscoroutine(res):
-                                await res
+                state = msg.get("result") or {}
+                if state.get("entity_id") == self._activity_entity:
+                    val = str(state.get("state", "") or "").strip()
+                    if val:
+                        print(f"[activity] {val}")   # always print on (re)connect
+                        self._last_activity = val
+                        res = self._on_activity(val)
+                        if asyncio.iscoroutine(res):
+                            await res
                 return
             # ignore interleaved messages until our result arrives
 
     async def _subscribe(self, ws: aiohttp.ClientWebSocketResponse, event_type: str) -> None:
-        await ws.send_json({"id": self._next_id(), "type": "subscribe_events", "event_type": event_type})
+        payload = {"id": self._next_id(), "type": "subscribe_events", "event_type": event_type}
+        if event_type == "state_changed":
+            payload["event_data"] = {"entity_id": self._activity_entity}
+        await ws.send_json(payload)
 
     async def _recv_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         while not self._stopping.is_set():
