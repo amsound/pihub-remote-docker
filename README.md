@@ -66,18 +66,31 @@ services:
     device_cgroup_rules:
       - 'c 13:* r'
     environment:
-      HA_TOKEN: "${HA_TOKEN}"          # ENV takes precedence
-      # HA_URL: "ws://127.0.0.1:8123/api/websocket" # defaults to local
-      # TOKEN_FILE: "/run/secrets/ha"    # optional fallback
-      # INPUT_EVENT_DEVICE: "/dev/input/eventX"  # optional override
-      # REPEAT_INITIAL_MS: "400"
-      # REPEAT_RATE_MS: "400"
+      HA_TOKEN: "###############"          # ENV takes precedence
+      # HA_TOKEN_FILE: "/run/secrets/ha"   # optional fallback
+      # HA_WS_URL: "ws://127.0.0.1:8123/api/websocket" # defaults to local
+      # USB_RECEIVER: "/dev/input/eventX"  # optional override
+      #      DEBUG_BT: 1                   # optional for debug
+      #      DEBUG_INPUT: 1                # optional for debug
+      #      DEBUG_CMD: 1                  # optional for debug
     volumes:
       - /dev/input:/dev/input:ro
       - /dev/input/by-id:/dev/input/by-id:ro
       - /run/dbus:/run/dbus
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: homeassistant
+    cpu_shares: 512
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      TZ: Europe/London
+    volumes:
+      - ./homeassistant:/config
+      - /etc/localtime:/etc/localtime:ro
 ```
 
 > ✅ Works without `--privileged`. If BlueZ features change in your distro, you may need to add capabilities later—but most setups don’t.
@@ -88,12 +101,12 @@ services:
 
 | Variable             | Description                                                   | Default / Notes                    |
 | -------------------- | ------------------------------------------------------------- | ---------------------------------- |
-| `HA_URL`             | Home Assistant WebSocket URL                                  | ws://127.0.0.1:8123/api/websocket  |
-| `HA_TOKEN`           | HA Long-Lived Access Token                                    | **Preferred** (env takes priority) |
-| `TOKEN_FILE`         | Path to a file containing the HA token                        | Fallback if `HA_TOKEN` not set     |
-| `INPUT_EVENT_DEVICE` | Optional explicit evdev device (e.g., `/dev/input/event2`)    | Auto-picks first *Unifying* device |
-| `REPEAT_INITIAL_MS`  | Global initial delay for synthetic repeats                    | `400`                              |
-| `REPEAT_RATE_MS`     | Global repeat rate                                            | `400`                              |
+| `HA_WS_URL`          | Home Assistant WebSocket URL                                  | Defaults to local                  |
+| `HA_TOKEN`           | HA Long-Lived Access Token                                    | Env takes priority)                |
+| `HA_TOKEN_FILE`      | Path to a file containing the HA token                        | Fallback if `HA_TOKEN` not set     |
+| `USB_RECEIVER`       | Optional explicit evdev device (e.g., `/dev/input/event2`)    | Auto-picks first *Unifying* device |
+| `KEMAP_PATH`         | Optional local Keymap json                                    | Defaults to internal packaged      |
+| `DEBUG_BT/INPUT/CMD` | Debug knobs                                                   | Default off                        |
 
 **Fail-fast:** the app exits on startup if it can’t obtain an HA token from env or file, logging `"[app] Cannot start without Home Assistant token: ..."` to point operators at the missing credential.
 
@@ -114,13 +127,13 @@ Example:
 Tuning with station:
 
 ```json
-{"dest":"ha","text":"tune","station":"BBC Radio 6"}
+{"dest":"ha","text":"radio","station":"BBC Radio 6"}
 ```
 
 ### Home Assistant → PiHub (commands/state)
 
 * Activity/state: push updates for `input_select.activity` to switch keymap modes
-* Commands (unchanged schema), e.g.:
+* Commands, e.g.:
 
 **Macro (HA-driven only):**
 
@@ -131,7 +144,7 @@ Tuning with station:
 **Send one BLE key:**
 
 ```json
-{"text":"ble_key","usage":"consumer","code":"menu_up","hold_ms":40}
+{"text":"ble","usage":"consumer","code":"menu_up","hold_ms":40}
 ```
 
 > BLE: per-button may use **Consumer or Keyboard** usages (edges only, **no repeats**).
@@ -146,9 +159,9 @@ Tuning with station:
 * Falls back to `MSC_SCAN` for stubborn keys
 * Maps physical keys → canonical `rem_*` names, then keymap decides action:
 
-  * `ha_text` → emits `{"dest":"ha","text":...}`
-  * `ble_key` → sends BLE Consumer/Keyboard usage with optional `hold_ms`
-  * Optional `long_press_ms`
+  * `emit` → sends WebSocket `{"dest":"ha","text":...}`
+  * `ble` → sends BLE Consumer/Keyboard usage (with optional `hold_ms` for a tap)
+  * Optional `min_hold_ms`
   * Optional `repeat` (synthetic; **HA only**)
 
 ---
