@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+from collections import deque
 from typing import Any, Awaitable, Callable, Optional
 
 import aiohttp
@@ -44,6 +45,7 @@ class HAWS:
         self._stopping = asyncio.Event()
         self._msg_id = 1
         self._last_activity: Optional[str] = None
+        self._pending: deque[dict[str, Any]] = deque()
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -117,7 +119,7 @@ class HAWS:
             print("[ws] connected")  # log *before* seed so order is consistent
 
             # Subscribe first to avoid missing a quick change during seed.
-            await self._subscribe(ws, "state_changed", {"entity_id": self._activity_entity})
+            await self._subscribe_activity(ws)
             await self._subscribe(ws, self._event_name)
 
             # Seed activity: ALWAYS print seed (even if same as last)
@@ -149,7 +151,7 @@ class HAWS:
         req_id = self._next_id()
         await ws.send_json({"id": req_id, "type": "get_states"})
         while True:
-            msg = await ws.receive_json()
+            msg = await self._read_json(ws)
             if msg.get("type") == "result" and msg.get("id") == req_id and msg.get("success"):
                 states = msg.get("result") or []
                 for st in states:
@@ -179,8 +181,62 @@ class HAWS:
             payload["event_data"] = event_data
         await ws.send_json(payload)
 
+    async def _subscribe_activity(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+        """Subscribe to activity state changes, preferring HA's dedicated API."""
+        payload: dict[str, Any] = {
+            "type": "subscribe_state_changed",
+            "entity_ids": [self._activity_entity],
+        }
+
+        try:
+            ok = await self._try_subscribe(ws, payload)
+        except Exception as exc:
+            print(f"[ws] subscribe_state_changed failed: {exc!r}; falling back", flush=True)
+            ok = False
+
+        if not ok:
+            print("[ws] subscribe_state_changed unsupported; falling back", flush=True)
+            await self._subscribe(ws, "state_changed", {"entity_id": self._activity_entity})
+
+    async def _try_subscribe(
+        self,
+        ws: aiohttp.ClientWebSocketResponse,
+        payload: dict[str, Any],
+    ) -> bool:
+        """
+        Attempt a subscription and wait for the result message.
+
+        Returns True on success, False if the command is unsupported. Raises on
+        other errors so the caller can abort the connection.
+        """
+
+        req_id = self._next_id()
+        send_payload = dict(payload)
+        send_payload["id"] = req_id
+        await ws.send_json(send_payload)
+
+        while True:
+            msg = await self._read_json(ws, consume_pending=False)
+            if msg.get("type") != "result" or msg.get("id") != req_id:
+                self._pending.append(msg)
+                continue
+
+            if msg.get("success"):
+                return True
+
+            error = msg.get("error") or {}
+            if error.get("code") in {"unknown_command", "unsupported_command"}:
+                return False
+
+            raise RuntimeError(f"subscribe failed: {error or msg}")
+
     async def _recv_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         while not self._stopping.is_set():
+            if self._pending:
+                data = self._pending.popleft()
+                await self._handle_payload(data)
+                continue
+
             msg = await ws.receive()
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
@@ -188,36 +244,7 @@ class HAWS:
                 except Exception:
                     continue
 
-                if data.get("type") == "event":
-                    ev = data.get("event") or {}
-                    ev_type = ev.get("event_type")
-                    edata = ev.get("data") or {}
-
-                    if ev_type == "state_changed":
-                        ent = edata.get("entity_id") or ((edata.get("old_state") or {}).get("entity_id"))
-                        if ent == self._activity_entity:
-                            new_state = (edata.get("new_state") or {}).get("state")
-                            if isinstance(new_state, str) and new_state:
-                                if new_state != self._last_activity:
-                                    print(f"[activity] {new_state}")
-                                    self._last_activity = new_state
-                                res = self._on_activity(new_state)
-                                if asyncio.iscoroutine(res):
-                                    await res
-
-                    elif ev_type == self._event_name:
-                        if edata.get("dest") == "pi":
-                            t = edata.get("text", "?")
-                            if t == "macro":
-                                print(f"[cmd] macro {edata.get('name', '?')}")
-                            elif t == "ble_key":
-                                print(f"[cmd] ble_key {edata.get('usage', '?')}/{edata.get('code', '?')} "
-                                      f"hold={int(edata.get('hold_ms', 40))}ms")
-                            else:
-                                print(f"[cmd] {t}")
-                            res = self._on_cmd(edata)
-                            if asyncio.iscoroutine(res):
-                                await res
+                await self._handle_payload(data)
 
             elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                 break  # reconnect
@@ -236,3 +263,49 @@ class HAWS:
         if sess:
             with contextlib.suppress(Exception):
                 await sess.close()
+
+    async def _read_json(
+        self,
+        ws: aiohttp.ClientWebSocketResponse,
+        *,
+        consume_pending: bool = True,
+    ) -> dict[str, Any]:
+        if consume_pending and self._pending:
+            return self._pending.popleft()
+        return await ws.receive_json()
+
+    async def _handle_payload(self, data: dict[str, Any]) -> None:
+        if data.get("type") != "event":
+            return
+
+        ev = data.get("event") or {}
+        ev_type = ev.get("event_type")
+        edata = ev.get("data") or {}
+
+        if ev_type == "state_changed":
+            ent = edata.get("entity_id") or ((edata.get("old_state") or {}).get("entity_id"))
+            if ent == self._activity_entity:
+                new_state = (edata.get("new_state") or {}).get("state")
+                if isinstance(new_state, str) and new_state:
+                    if new_state != self._last_activity:
+                        print(f"[activity] {new_state}")
+                        self._last_activity = new_state
+                    res = self._on_activity(new_state)
+                    if asyncio.iscoroutine(res):
+                        await res
+
+        elif ev_type == self._event_name:
+            if edata.get("dest") == "pi":
+                t = edata.get("text", "?")
+                if t == "macro":
+                    print(f"[cmd] macro {edata.get('name', '?')}")
+                elif t == "ble_key":
+                    print(
+                        f"[cmd] ble_key {edata.get('usage', '?')}/{edata.get('code', '?')} "
+                        f"hold={int(edata.get('hold_ms', 40))}ms"
+                    )
+                else:
+                    print(f"[cmd] {t}")
+                res = self._on_cmd(edata)
+                if asyncio.iscoroutine(res):
+                    await res
