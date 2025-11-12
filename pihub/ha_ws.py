@@ -117,7 +117,7 @@ class HAWS:
             print("[ws] connected")  # log *before* seed so order is consistent
 
             # Subscribe first to avoid missing a quick change during seed.
-            await self._subscribe(ws, "state_changed")
+            await self._subscribe(ws, "state_changed", {"entity_id": self._activity_entity})
             await self._subscribe(ws, self._event_name)
 
             # Seed activity: ALWAYS print seed (even if same as last)
@@ -164,8 +164,20 @@ class HAWS:
                 return
             # ignore interleaved messages until our result arrives
 
-    async def _subscribe(self, ws: aiohttp.ClientWebSocketResponse, event_type: str) -> None:
-        await ws.send_json({"id": self._next_id(), "type": "subscribe_events", "event_type": event_type})
+    async def _subscribe(
+        self,
+        ws: aiohttp.ClientWebSocketResponse,
+        event_type: str,
+        event_data: Optional[dict[str, Any]] = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "id": self._next_id(),
+            "type": "subscribe_events",
+            "event_type": event_type,
+        }
+        if event_data:
+            payload["event_data"] = event_data
+        await ws.send_json(payload)
 
     async def _recv_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         while not self._stopping.is_set():
