@@ -55,7 +55,7 @@
 
     "watch": {
       "rem_power_off":    [ { "do": "emit", "text": "power_off" } ],
-      "rem_activity_1":   [ { "do": "noop" }, { "do": "emit", "min_hold_ms": 500, "text": "listen" } ],
+      "rem_activity_1":   [ { "do": "noop" }, { "do": "emit", "min_hold_ms": 1000, "text": "listen" } ],
       "rem_activity_2":   [ { "do": "emit", "text": "watch" } ],
       "rem_activity_3":   [ { "do": "noop" } ],
 
