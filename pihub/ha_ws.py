@@ -1,4 +1,4 @@
-"""Home Assistant WebSocket integration with resilient reconnects."""
+"""Home Assistant WebSocket integration with resilient reconnects + subscribe_trigger."""
 
 from __future__ import annotations
 
@@ -16,10 +16,8 @@ OnCmd      = Callable[[dict], Awaitable[None]] | Callable[[dict], None]
 
 class HAWS:
     """
-    Home Assistant WebSocket client with jittered reconnect.
-    - Prints [ws] connected/disconnected.
-    - Prints [activity] <value> on seed and on every change.
-    - Drops sends when offline (no queue, no acks).
+    Uses subscribe_trigger to receive only the target entity's changes.
+    Why: reduce WS noise/CPU on constrained devices.
     """
 
     def __init__(
@@ -48,14 +46,12 @@ class HAWS:
     # ── Public API ───────────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        """
-        Run until stop() is called. Reconnect with exponential backoff + jitter.
-        """
+        """Run until stop() is called. Reconnect with exponential backoff + jitter."""
         delay = 1.0
         while not self._stopping.is_set():
             try:
-                await self._connect_once()            # returns on disconnect
-                delay = 1.0                           # reset on a clean pass
+                await self._connect_once()
+                delay = 1.0
                 if not self._stopping.is_set():
                     await asyncio.sleep(random.uniform(0.2, 0.8))
                 continue
@@ -81,7 +77,6 @@ class HAWS:
     async def send_cmd(self, text: str, **extra: Any) -> bool:
         """
         Fire an event to HA (dest:'ha'). No acks, no buffering.
-        Returns False if offline.
         """
         ws = self._ws
         if ws is None or ws.closed:
@@ -116,14 +111,16 @@ class HAWS:
 
             print("[ws] connected")  # log *before* seed so order is consistent
 
-            # Subscribe first to avoid missing a quick change during seed.
-            await self._subscribe(ws, "state_changed")
+            # Subscribe to ONLY the target entity via trigger.
+            await self._subscribe_trigger_entity(ws, self._activity_entity)
+
+            # Keep custom event bus subscription unchanged (e.g., "pihub.cmd").
             await self._subscribe(ws, self._event_name)
 
-            # Seed activity: ALWAYS print seed (even if same as last)
+            # Seed activity from current states once.
             await self._seed_activity(ws)
 
-            # Receive until closed
+            # Receive until closed.
             await self._recv_loop(ws)
 
         finally:
@@ -145,6 +142,7 @@ class HAWS:
     async def _seed_activity(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         """
         Fetch current activity once; ALWAYS print + callback, then cache.
+        Why: ensure we resync after reconnects without relying on missed events.
         """
         req_id = self._next_id()
         await ws.send_json({"id": req_id, "type": "get_states"})
@@ -156,7 +154,7 @@ class HAWS:
                     if st.get("entity_id") == self._activity_entity:
                         val = str(st.get("state", "") or "").strip()
                         if val:
-                            print(f"[activity] {val}")   # always print on (re)connect
+                            print(f"[activity] {val}")
                             self._last_activity = val
                             res = self._on_activity(val)
                             if asyncio.iscoroutine(res):
@@ -166,6 +164,35 @@ class HAWS:
 
     async def _subscribe(self, ws: aiohttp.ClientWebSocketResponse, event_type: str) -> None:
         await ws.send_json({"id": self._next_id(), "type": "subscribe_events", "event_type": event_type})
+
+    async def _subscribe_trigger_entity(self, ws: aiohttp.ClientWebSocketResponse, entity_id: str) -> None:
+        """
+        Server-side filter: only deliver state changes for this entity.
+        """
+        await ws.send_json({
+            "id": self._next_id(),
+            "type": "subscribe_trigger",
+            "trigger": {
+                "platform": "state",
+                "entity_id": entity_id,
+            },
+        })
+        # Note: HA replies with a result, then sends trigger matches as events with
+        # event.variables.trigger.{from_state,to_state}. (Docs show 'type: event' payload.)  # noqa: E501
+
+    def _extract_trigger_states(self, ev: dict) -> tuple[Optional[dict], Optional[dict]]:
+        """
+        Return (from_state, to_state) from common subscribe_trigger shapes.
+        Why: HA docs/examples differ between versions; be tolerant. :contentReference[oaicite:1]{index=1}
+        """
+        vars_ = ev.get("variables") or {}
+        trig = vars_.get("trigger") or {}
+        if not trig and "data" in ev:
+            # Some builds place trigger info in data; keep backward-friendly.
+            trig = (ev.get("data") or {}).get("trigger") or {}
+        from_state = trig.get("from_state") or (ev.get("data") or {}).get("from_state")
+        to_state = trig.get("to_state") or (ev.get("data") or {}).get("to_state")
+        return from_state, to_state
 
     async def _recv_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         while not self._stopping.is_set():
@@ -181,10 +208,13 @@ class HAWS:
                     ev_type = ev.get("event_type")
                     edata = ev.get("data") or {}
 
-                    if ev_type == "state_changed":
-                        ent = edata.get("entity_id") or ((edata.get("old_state") or {}).get("entity_id"))
-                        if ent == self._activity_entity:
-                            new_state = (edata.get("new_state") or {}).get("state")
+                    # 1) Triggered state change for our one entity (subscribe_trigger).
+                    #    No need to re-check entity_id, but do it defensively.
+                    from_state, to_state = self._extract_trigger_states(ev)
+                    if to_state:
+                        ent = to_state.get("entity_id") or (from_state or {}).get("entity_id")
+                        if not ent or ent == self._activity_entity:
+                            new_state = to_state.get("state")
                             if isinstance(new_state, str) and new_state:
                                 if new_state != self._last_activity:
                                     print(f"[activity] {new_state}")
@@ -192,15 +222,19 @@ class HAWS:
                                 res = self._on_activity(new_state)
                                 if asyncio.iscoroutine(res):
                                     await res
+                            continue  # already handled
 
-                    elif ev_type == self._event_name:
+                    # 2) Your custom command events (unchanged).
+                    if ev_type == self._event_name:
                         if edata.get("dest") == "pi":
                             t = edata.get("text", "?")
                             if t == "macro":
                                 print(f"[cmd] macro {edata.get('name', '?')}")
                             elif t == "ble_key":
-                                print(f"[cmd] ble_key {edata.get('usage', '?')}/{edata.get('code', '?')} "
-                                      f"hold={int(edata.get('hold_ms', 40))}ms")
+                                print(
+                                    f"[cmd] ble_key {edata.get('usage', '?')}/{edata.get('code', '?')} "
+                                    f"hold={int(edata.get('hold_ms', 40))}ms"
+                                )
                             else:
                                 print(f"[cmd] {t}")
                             res = self._on_cmd(edata)
