@@ -73,6 +73,7 @@ class HAWS:
         """Signal the client to stop and close the socket."""
         self._stopping.set()
         await self._close_ws()
+        await self._close_session()
 
     async def send_cmd(self, text: str, **extra: Any) -> bool:
         """
@@ -97,10 +98,10 @@ class HAWS:
     async def _connect_once(self) -> None:
         """One lifecycle: connect → auth → subscribe → seed → recv loop → close."""
         await self._close_ws()
-        self._session = aiohttp.ClientSession()
+        session = await self._ensure_session()
 
         try:
-            ws = await self._session.ws_connect(self._url, heartbeat=30, autoping=True)
+            ws = await session.ws_connect(self._url, heartbeat=30, autoping=True)
         except Exception:
             await self._close_ws()
             raise
@@ -251,10 +252,18 @@ class HAWS:
 
     async def _close_ws(self) -> None:
         ws, self._ws = self._ws, None
-        sess, self._session = self._session, None
         if ws:
             with contextlib.suppress(Exception):
                 await ws.close()
+
+    async def _close_session(self) -> None:
+        sess, self._session = self._session, None
         if sess:
             with contextlib.suppress(Exception):
                 await sess.close()
+
+    async def _ensure_session(self) -> aiohttp.ClientSession:
+        session = self._session
+        if session is None or session.closed:
+            self._session = session = aiohttp.ClientSession()
+        return session
