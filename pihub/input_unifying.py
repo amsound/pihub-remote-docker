@@ -42,6 +42,8 @@ class UnifyingReader:
         self._grab = grab
 
         self._task: Optional[asyncio.Task] = None
+        self._edge_worker: Optional[asyncio.Task] = None
+        self._edge_queue: Optional[asyncio.Queue[tuple[str, str] | None]] = None
         self._stop = asyncio.Event()
 
     # ── Public API ───────────────────────────────────────────────────────────
@@ -49,6 +51,10 @@ class UnifyingReader:
         """Begin watching the configured input device."""
         if self._task is None:
             self._stop.clear()
+            self._edge_queue = asyncio.Queue()
+            self._edge_worker = asyncio.create_task(
+                self._drain_edges(), name="unifying_edge_worker"
+            )
             self._task = asyncio.create_task(self._run(), name="unifying_reader")
 
     async def stop(self) -> None:
@@ -59,6 +65,15 @@ class UnifyingReader:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
+        if self._edge_queue is not None:
+            with contextlib.suppress(asyncio.QueueFull):
+                self._edge_queue.put_nowait(None)
+        if self._edge_worker:
+            self._edge_worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._edge_worker
+            self._edge_worker = None
+        self._edge_queue = None
 
     @property
     def device_path(self) -> str:
@@ -205,9 +220,37 @@ class UnifyingReader:
     async def _emit(self, rem_key: str, edge: str) -> None:
         if os.getenv("DEBUG_INPUT") == "1":
             print(f"[usb] {rem_key} {edge}")
-        res = self._on_edge(rem_key, edge)
-        if asyncio.iscoroutine(res):
-            await res
+        queue = self._edge_queue
+        if queue is None:
+            return
+        queue.put_nowait((rem_key, edge))
+
+    async def _drain_edges(self) -> None:
+        queue = self._edge_queue
+        if queue is None:
+            return
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    queue.task_done()
+                    break
+                rem_key, edge = item
+                try:
+                    res = self._on_edge(rem_key, edge)
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception as exc:
+                    print(f"[usb] dispatch error: {exc!r}", flush=True)
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:
+            raise
+        finally:
+            while not queue.empty():
+                with contextlib.suppress(Exception):
+                    queue.get_nowait()
+                    queue.task_done()
 
 
 def _autodetect_or_none() -> Optional[str]:
