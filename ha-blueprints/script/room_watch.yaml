@@ -1,0 +1,43 @@
+blueprint:
+  name: Room - Watch
+  description: |
+    Hardcoded script blueprint for "watch".
+  domain: script
+
+sequence:
+  - action: input_select.select_option
+    metadata: {}
+    data:
+      option: watch
+    target:
+      entity_id: input_select.activity
+
+  - parallel:
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: media_player.tv
+                state: "off"
+            sequence:
+              - event: pihub.cmd
+                event_data:
+                  dest: pi
+                  text: macro
+                  name: power_on
+      - action: media_player.select_source
+        metadata: {}
+        data:
+          source: Opt
+        target:
+          entity_id: media_player.speakers
+
+  - action: script.reset_ma
+    metadata: {}
+    data: {}
+
+  - action: input_select.select_option
+    metadata: {}
+    data:
+      option: watch
+    target:
+      entity_id: input_select.last_run_activity

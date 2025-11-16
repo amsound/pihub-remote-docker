@@ -1,0 +1,42 @@
+blueprint:
+  name: Room - Power off
+  description: |
+    Hardcoded script blueprint for "power_off".
+  domain: script
+
+sequence:
+  - action: input_select.select_option
+    metadata: {}
+    data:
+      option: power_off
+    target:
+      entity_id: input_select.activity
+
+  - parallel:
+      - action: media_player.turn_off
+        metadata: {}
+        data: {}
+        target:
+          entity_id: media_player.speakers
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: media_player.tv
+                state: "on"
+            sequence:
+              - event: pihub.cmd
+                event_data:
+                  dest: pi
+                  text: macro
+                  name: power_off
+
+  - action: script.reset_ma
+    metadata: {}
+    data: {}
+
+  - action: input_select.select_option
+    metadata: {}
+    data:
+      option: power_off
+    target:
+      entity_id: input_select.last_run_activity

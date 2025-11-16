@@ -1,0 +1,82 @@
+blueprint:
+  name: Room - Activity Router
+  description: |
+    Hardcoded automation: routes PiHub watch/listen/power_off and device overrides.
+  domain: automation
+
+# --- Automation body ---
+triggers:
+  - entity_id: media_player.tv
+    to: "on"
+    for: "00:00:02"
+    id: TV
+    trigger: state
+  - entity_id: media_player.speakers
+    attribute: source
+    to:
+      - Wifi
+    id: Speakers
+    trigger: state
+  - trigger: state
+    entity_id: media_player.speakers_ma
+    id: Speakers
+    from:
+      - "off"
+  - event_type: pihub.cmd
+    id: PiHub
+    trigger: event
+
+condition: []
+
+action:
+  - choose:
+      # ----- If triggered by PiHub -----
+      - conditions:
+          - condition: trigger
+            id: PiHub
+          - condition: template
+            value_template: "{{ trigger.event.data.dest == 'ha' }}"
+          - condition: template
+            value_template: "{{ trigger.event.data.text in ['watch','listen','power_off'] }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.text == 'watch' }}"
+                sequence:
+                  - action: script.room_watch
+                alias: Watch
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.text == 'listen' }}"
+                sequence:
+                  - action: script.room_listen
+                    data: {}
+                alias: Listen
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.text == 'power_off' }}"
+                sequence:
+                  - action: script.room_power_off
+                alias: Power Off
+        alias: If triggered by PiHub
+
+      # ----- TV on → watch -----
+      - conditions:
+          - condition: trigger
+            id: TV
+        sequence:
+          - action: script.room_watch
+
+      # ----- Speakers → Wifi → listen (override) -----
+      - conditions:
+          - condition: trigger
+            id:
+              - Speakers
+        sequence:
+          - action: script.room_listen
+            data:
+              override: true
+
+mode: single
+max_exceeded: silent

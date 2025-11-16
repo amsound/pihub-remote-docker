@@ -1,0 +1,38 @@
+blueprint:
+  name: Idle Power Off
+  description: Turns off a media player if it remains idle for a given number of minutes.
+  domain: automation
+  input:
+    speaker_media_player:
+      name: Speaker Media Player
+      description: ""
+      selector:
+        entity:
+          domain: media_player
+    idle_timeout_minutes:
+      name: Idle Timeout (Minutes)
+      description: ""
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: minutes
+          mode: slider
+
+trigger:
+  - platform: state
+    entity_id: !input speaker_media_player
+    to: "idle"
+    for:
+      minutes: !input idle_timeout_minutes
+
+condition: []
+
+action:
+  - alias: Turn off media player
+    action: media_player.turn_off
+    target:
+      entity_id: !input speaker_media_player
+
+mode: single
