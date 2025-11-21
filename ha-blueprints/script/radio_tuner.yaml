@@ -29,7 +29,7 @@ sequence:
       station_list_raw: !input station_list_string
       station_list: "{{ station_list_raw.split(',') | map('trim') | list }}"
       index_helper_entity: input_number.radio_station_index
-      media_player_entity: media_player.speakers_ma
+      media_player_entity: media_player.music_assistant
       index: "{{ states(index_helper_entity) | int(-1) }}"
       total_stations: "{{ station_list | length }}"
 
@@ -74,7 +74,7 @@ sequence:
 
   - service: music_assistant.play_media
     target:
-      entity_id: media_player.speakers_ma
+      entity_id: media_player.music_assistant
     data:
       media_id: "{{ selected_station }}"
       media_type: radio
