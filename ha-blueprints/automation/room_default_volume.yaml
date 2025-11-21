@@ -56,7 +56,7 @@ actions:
           - condition: template
             value_template: "{{ current_source == 'Wifi' }}"
           - condition: state
-            entity_id: media_player.speakers_ma
+            entity_id: media_player.music_assistant
             state: "playing"
         sequence:
           - action: media_player.volume_set
