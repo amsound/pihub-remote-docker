@@ -30,6 +30,9 @@ class Config:
 
     keymap_path: Optional[str]
 
+    health_host: str
+    health_port: int
+
     # debug toggles
     debug_bt: bool
     debug_input: bool
@@ -51,6 +54,12 @@ class Config:
 
         keymap_path   = (os.getenv("KEYMAP_PATH") or "").strip() or None
 
+        health_host   = os.getenv("HEALTH_HOST", "0.0.0.0")
+        try:
+            health_port = int(os.getenv("HEALTH_PORT", "9123"))
+        except ValueError:
+            health_port = 9123
+
         debug_bt     = _getenv_bool("DEBUG_BT", False)
         debug_input  = _getenv_bool("DEBUG_INPUT", False)
         debug_cmd    = _getenv_bool("DEBUG_CMD", False)
@@ -65,6 +74,8 @@ class Config:
             ble_adapter=ble_adapter,
             ble_device_name=ble_device_name,
             keymap_path=keymap_path,
+            health_host=health_host,
+            health_port=health_port,
             debug_bt=debug_bt,
             debug_input=debug_input,
             debug_cmd=debug_cmd,
