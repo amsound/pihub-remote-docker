@@ -73,6 +73,7 @@ class HAWS:
         """Signal the client to stop and close the socket."""
         self._stopping.set()
         await self._close_ws()
+        await self._close_session()
 
     async def send_cmd(self, text: str, **extra: Any) -> bool:
         """
@@ -97,10 +98,10 @@ class HAWS:
     async def _connect_once(self) -> None:
         """One lifecycle: connect → auth → subscribe → seed → recv loop → close."""
         await self._close_ws()
-        self._session = aiohttp.ClientSession()
+        session = await self._ensure_session()
 
         try:
-            ws = await self._session.ws_connect(self._url, heartbeat=30, autoping=True)
+            ws = await session.ws_connect(self._url, heartbeat=30, autoping=True)
         except Exception:
             await self._close_ws()
             raise
@@ -206,7 +207,7 @@ class HAWS:
                 if data.get("type") == "event":
                     ev = data.get("event") or {}
                     ev_type = ev.get("event_type")
-                    edata = ev.get("data") or {}
+                    edata = dict(ev.get("data") or {})
 
                     # 1) Triggered state change for our one entity (subscribe_trigger).
                     #    No need to re-check entity_id, but do it defensively.
@@ -231,9 +232,11 @@ class HAWS:
                             if t == "macro":
                                 print(f"[cmd] macro {edata.get('name', '?')}")
                             elif t == "ble_key":
+                                hold_ms = self._sanitize_hold_ms(edata.get("hold_ms"))
+                                edata["hold_ms"] = hold_ms
                                 print(
                                     f"[cmd] ble_key {edata.get('usage', '?')}/{edata.get('code', '?')} "
-                                    f"hold={int(edata.get('hold_ms', 40))}ms"
+                                    f"hold={hold_ms}ms"
                                 )
                             else:
                                 print(f"[cmd] {t}")
@@ -251,10 +254,28 @@ class HAWS:
 
     async def _close_ws(self) -> None:
         ws, self._ws = self._ws, None
-        sess, self._session = self._session, None
         if ws:
             with contextlib.suppress(Exception):
                 await ws.close()
+
+    async def _close_session(self) -> None:
+        sess, self._session = self._session, None
         if sess:
             with contextlib.suppress(Exception):
                 await sess.close()
+
+    async def _ensure_session(self) -> aiohttp.ClientSession:
+        session = self._session
+        if session is None or session.closed:
+            self._session = session = aiohttp.ClientSession()
+        return session
+
+    def _sanitize_hold_ms(self, val: Any, *, default: int = 40) -> int:
+        """Return a whitelisted hold duration, falling back to default."""
+
+        allowed = {0, 40, 80, 160, 320}
+        try:
+            parsed = int(val)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed in allowed else default
