@@ -43,6 +43,19 @@ class HAWS:
         self._msg_id = 1
         self._last_activity: Optional[str] = None
 
+    @property
+    def is_connected(self) -> bool:
+        """Return True when the websocket is currently open."""
+
+        ws = self._ws
+        return bool(ws and not ws.closed)
+
+    @property
+    def last_activity(self) -> Optional[str]:
+        """Expose the most recent activity reported by Home Assistant."""
+
+        return self._last_activity
+
     # ── Public API ───────────────────────────────────────────────────────────
 
     async def start(self) -> None:

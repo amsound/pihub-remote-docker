@@ -84,6 +84,13 @@ class UnifyingReader:
         path = _autodetect_or_none()
         return path or "<auto>"
 
+    @property
+    def is_running(self) -> bool:
+        """Return True while the reader loop is active."""
+
+        t = self._task
+        return bool(t and not t.done())
+
     # ── Internals ───────────────────────────────────────────────────────────
     async def _run(self) -> None:
         backoff = 1.0  # seconds, exponential up to 10s
