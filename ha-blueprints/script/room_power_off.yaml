@@ -5,37 +5,39 @@ blueprint:
   domain: script
 
 sequence:
+  - variables:
+      _tv_was_on: "{{ is_state('media_player.tv', 'on') }}"
   - action: input_select.select_option
-    metadata: {}
     data:
       option: power_off
     target:
       entity_id: input_select.activity
-
   - parallel:
       - action: media_player.turn_off
-        metadata: {}
-        data: {}
         target:
           entity_id: media_player.speakers
       - choose:
           - conditions:
-              - condition: state
-                entity_id: media_player.tv
-                state: "on"
+              - condition: template
+                value_template: "{{ _tv_was_on }}"
             sequence:
               - event: pihub.cmd
                 event_data:
                   dest: pi
                   text: macro
                   name: power_off
-
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ _tv_was_on }}"
+        sequence:
+          - alias: Wait for TV = off (max 7s)
+            wait_template: "{{ is_state('media_player.tv', 'off') }}"
+            timeout: "00:00:07"
+            continue_on_timeout: true
+          - delay: "00:00:01"
   - action: script.reset_ma
-    metadata: {}
-    data: {}
-
   - action: input_select.select_option
-    metadata: {}
     data:
       option: power_off
     target:
