@@ -4,6 +4,9 @@ blueprint:
     Hardcoded script blueprint for "watch".
   domain: script
 
+mode: single
+max_exceeded: silent
+
 sequence:
   - variables:
       _tv_was_off: "{{ is_state('media_player.tv', 'off') }}"
