@@ -1,5 +1,5 @@
 blueprint:
-  name: Room - Listen (with TV-off wait)
+  name: Room - Listen
   description: |
     Hardcoded script blueprint for "listen".
   domain: script
