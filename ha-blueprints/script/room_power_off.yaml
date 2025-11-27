@@ -4,6 +4,9 @@ blueprint:
     Hardcoded script blueprint for "power_off".
   domain: script
 
+mode: single
+max_exceeded: silent
+
 sequence:
   - variables:
       _tv_was_on: "{{ is_state('media_player.tv', 'on') }}"
