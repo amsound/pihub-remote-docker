@@ -1,5 +1,5 @@
 blueprint:
-  name: Room - Listen
+  name: Room - Listen (with TV-off wait)
   description: |
     Hardcoded script blueprint for "listen".
   domain: script
@@ -7,7 +7,6 @@ blueprint:
   input:
     radio_input:
       name: Radio Station
-      description: ""
       selector:
         select:
           custom_value: true
@@ -38,10 +37,12 @@ blueprint:
 fields:
   override:
     name: Override
-    description: Only set limited variables
+    description: Only set limited variables (external/AirPlay path)
     default: false
     selector:
       boolean: {}
+
+mode: single
 
 sequence:
   - action: input_select.select_option
@@ -66,6 +67,11 @@ sequence:
                       dest: pi
                       text: macro
                       name: power_off
+                  - alias: "Wait for TV = off (max 7s)"
+                    wait_template: "{{ is_state('media_player.tv', 'off') }}"
+                    timeout: "00:00:07"
+                    continue_on_timeout: true
+                  - delay: "00:00:01"
 
           - action: input_select.select_option
             data:
@@ -94,7 +100,6 @@ sequence:
               source: Wifi
             target:
               entity_id: media_player.speakers
-
   - choose:
       - conditions:
           - condition: state
@@ -106,6 +111,11 @@ sequence:
               dest: pi
               text: macro
               name: power_off
+          - alias: "Wait for TV = off (max 7s)"
+            wait_template: "{{ is_state('media_player.tv', 'off') }}"
+            timeout: "00:00:07"
+            continue_on_timeout: true
+          - delay: "00:00:01"
 
   - action: input_select.select_option
     data:
