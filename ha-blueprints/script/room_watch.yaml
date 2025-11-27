@@ -5,13 +5,13 @@ blueprint:
   domain: script
 
 sequence:
+  - variables:
+      _tv_was_off: "{{ is_state('media_player.tv', 'off') }}"
   - action: input_select.select_option
-    metadata: {}
     data:
       option: watch
     target:
       entity_id: input_select.activity
-
   - parallel:
       - choose:
           - conditions:
@@ -25,18 +25,22 @@ sequence:
                   text: macro
                   name: power_on
       - action: media_player.select_source
-        metadata: {}
         data:
           source: Opt
         target:
           entity_id: media_player.speakers
-
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ _tv_was_off }}"
+        sequence:
+          - alias: Wait for TV = on (max 7s)
+            wait_template: "{{ is_state('media_player.tv', 'on') }}"
+            timeout: "00:00:07"
+            continue_on_timeout: true
+          - delay: "00:00:01"
   - action: script.reset_ma
-    metadata: {}
-    data: {}
-
   - action: input_select.select_option
-    metadata: {}
     data:
       option: watch
     target:
