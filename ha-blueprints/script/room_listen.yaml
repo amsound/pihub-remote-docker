@@ -43,6 +43,7 @@ fields:
       boolean: {}
 
 mode: single
+max_exceeded: silent
 
 sequence:
   - action: input_select.select_option
