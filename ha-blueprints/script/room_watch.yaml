@@ -9,7 +9,7 @@ max_exceeded: silent
 
 sequence:
   - variables:
-      _tv_was_off: "{{ is_state('binary_sensor.tv', 'off') }}"
+      _tv_was_off: "{{ states('binary_sensor.tv') != 'on' }}"
   - action: input_select.select_option
     data:
       option: watch
@@ -18,9 +18,8 @@ sequence:
   - parallel:
       - choose:
           - conditions:
-              - condition: state
-                entity_id: binary_sensor.tv
-                state: "off"
+              - condition: template
+                value_template: "{{ states('binary_sensor.tv') != 'on' }}"
             sequence:
               - event: pihub.cmd
                 event_data:
