@@ -124,19 +124,19 @@
       "rem_dir_right":    [ { "do": "emit", "text": "media_next" } ],
       "rem_ok":           [ { "do": "emit", "text": "media_play_pause" } ],
 
-      "rem_ch_up":        [ { "do": "emit", "text": "radio", "tune_action": "next" } ],
-      "rem_ch_down":      [ { "do": "emit", "text": "radio", "tune_action": "prev" } ],
+      "rem_ch_up":        [ { "do": "noop" } ],
+      "rem_ch_down":      [ { "do": "noop" } ],
 
-      "rem_0":            [ { "do": "emit", "text": "radio", "station": "Magic Radio" } ],
-      "rem_1":            [ { "do": "emit", "text": "radio", "station": "BBC Radio 1" } ],
-      "rem_2":            [ { "do": "emit", "text": "radio", "station": "Classic FM" } ],
-      "rem_3":            [ { "do": "emit", "text": "radio", "station": "Absolute Radio" } ],
-      "rem_4":            [ { "do": "emit", "text": "radio", "station": "BBC Radio 4" } ],
-      "rem_5":            [ { "do": "emit", "text": "radio", "station": "Capital London" } ],
-      "rem_6":            [ { "do": "emit", "text": "radio", "station": "BBC Radio 6 Music" } ],
-      "rem_7":            [ { "do": "emit", "text": "radio", "station": "FIP" } ],
-      "rem_8":            [ { "do": "emit", "text": "radio", "station": "KCRW Eclectic 24" } ],
-      "rem_9":            [ { "do": "emit", "text": "radio", "station": "Virgin Radio" } ]
+      "rem_1":            [ { "do": "emit", "text": "preset1" } ],
+      "rem_2":            [ { "do": "emit", "text": "preset2" } ],
+      "rem_3":            [ { "do": "emit", "text": "preset3" } ],
+      "rem_4":            [ { "do": "emit", "text": "preset4" } ],
+      "rem_5":            [ { "do": "emit", "text": "preset5" } ],
+      "rem_6":            [ { "do": "emit", "text": "preset6" } ],
+      "rem_7":            [ { "do": "emit", "text": "preset7" } ],
+      "rem_8":            [ { "do": "emit", "text": "preset8" } ],
+      "rem_9":            [ { "do": "emit", "text": "preset9" } ],
+      "rem_0":            [ { "do": "emit", "text": "preset0" } ]
     }
   }
 }
