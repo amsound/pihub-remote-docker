@@ -127,16 +127,16 @@
       "rem_ch_up":        [ { "do": "noop" } ],
       "rem_ch_down":      [ { "do": "noop" } ],
 
-      "rem_1":            [ { "do": "emit", "text": "preset1" } ],
-      "rem_2":            [ { "do": "emit", "text": "preset2" } ],
-      "rem_3":            [ { "do": "emit", "text": "preset3" } ],
-      "rem_4":            [ { "do": "emit", "text": "preset4" } ],
-      "rem_5":            [ { "do": "emit", "text": "preset5" } ],
-      "rem_6":            [ { "do": "emit", "text": "preset6" } ],
-      "rem_7":            [ { "do": "emit", "text": "preset7" } ],
-      "rem_8":            [ { "do": "emit", "text": "preset8" } ],
-      "rem_9":            [ { "do": "emit", "text": "preset9" } ],
-      "rem_0":            [ { "do": "emit", "text": "preset0" } ]
+      "rem_1":            [ { "do": "emit", "text": "1" } ],
+      "rem_2":            [ { "do": "emit", "text": "2" } ],
+      "rem_3":            [ { "do": "emit", "text": "3" } ],
+      "rem_4":            [ { "do": "emit", "text": "4" } ],
+      "rem_5":            [ { "do": "emit", "text": "5" } ],
+      "rem_6":            [ { "do": "emit", "text": "6" } ],
+      "rem_7":            [ { "do": "emit", "text": "7" } ],
+      "rem_8":            [ { "do": "emit", "text": "8" } ],
+      "rem_9":            [ { "do": "emit", "text": "9" } ],
+      "rem_0":            [ { "do": "emit", "text": "0" } ]
     }
   }
 }
