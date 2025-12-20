@@ -1,0 +1,66 @@
+blueprint:
+  name: Room - Default Volume
+  description: |
+    Sets speaker volume on input changes only:
+      - If source is 'Opt'  → set Watch volume
+      - If source is 'Wifi' → set Listen volume (only if Music Assistant is playing)
+  domain: automation
+
+  input:
+    watch_volume:
+      name: Watch Default
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+          mode: slider
+    listen_volume:
+      name: Listen default
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+          mode: slider
+
+triggers:
+  - platform: state
+    entity_id: media_player.speakers
+    attribute: source
+
+mode: single
+
+variables:
+  speaker: media_player.speakers
+  watch_volume_value: !input watch_volume
+  listen_volume_value: !input listen_volume
+  current_source: "{{ state_attr(speaker, 'source') }}"
+
+actions:
+  - delay: "00:00:01"
+  - choose:
+      # Exact, case-sensitive: Opt → Watch volume
+      - conditions:
+          - condition: template
+            value_template: "{{ current_source == 'Opt' }}"
+        sequence:
+          - action: media_player.volume_set
+            target:
+              entity_id: media_player.speakers
+            data:
+              volume_level: "{{ watch_volume_value }}"
+
+      # Exact, case-sensitive: Wifi → Listen volume, but only if MA is playing
+      - conditions:
+          - condition: template
+            value_template: "{{ current_source == 'Wifi' }}"
+          - condition: state
+            entity_id: media_player.music_assistant
+            state: "playing"
+        sequence:
+          - action: media_player.volume_set
+            target:
+              entity_id: media_player.speakers
+            data:
+              volume_level: "{{ listen_volume_value }}"

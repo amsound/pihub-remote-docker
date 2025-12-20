@@ -106,9 +106,31 @@ services:
 | `HA_TOKEN_FILE`      | Path to a file containing the HA token                        | Fallback if `HA_TOKEN` not set     |
 | `USB_RECEIVER`       | Optional explicit evdev device (e.g., `/dev/input/event2`)    | Auto-picks first *Unifying* device |
 | `KEMAP_PATH`         | Optional local Keymap json                                    | Defaults to internal packaged      |
+| `HEALTH_HOST`        | Bind address for the HTTP health endpoint                     | `0.0.0.0`                          |
+| `HEALTH_PORT`        | Port for the HTTP health endpoint                             | `9123`                             |
 | `DEBUG_BT/INPUT/CMD` | Debug knobs                                                   | Default off                        |
 
 **Fail-fast:** the app exits on startup if it can’t obtain an HA token from env or file, logging `"[app] Cannot start without Home Assistant token: ..."` to point operators at the missing credential.
+
+---
+
+## 🌡️ Health endpoint
+
+A tiny HTTP endpoint publishes a JSON snapshot at `http://<host>:<HEALTH_PORT>/health`:
+
+```json
+{
+  "status": "ok",              // 503 when degraded
+  "ws_connected": true,
+  "last_activity": "tv",       // from Home Assistant
+  "ble_available": true,        // advertising + HID ready
+  "usb_reader": "running",     // USB loop active
+  "usb_device": "/dev/input/event0",
+  "port": 9123
+}
+```
+
+This can be polled from Home Assistant via a REST sensor or used by container orchestrators for liveness checks. A degraded status means the USB reader or HA websocket is unavailable.
 
 ---
 

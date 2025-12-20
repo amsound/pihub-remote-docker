@@ -1,0 +1,49 @@
+blueprint:
+  name: Room - Watch
+  description: |
+    Hardcoded script blueprint for "watch".
+  domain: script
+
+mode: single
+max_exceeded: silent
+
+sequence:
+  - variables:
+      _tv_was_off: "{{ states('binary_sensor.tv') != 'on' }}"
+  - action: input_select.select_option
+    data:
+      option: watch
+    target:
+      entity_id: input_select.activity
+  - parallel:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ states('binary_sensor.tv') != 'on' }}"
+            sequence:
+              - event: pihub.cmd
+                event_data:
+                  dest: pi
+                  text: macro
+                  name: power_on
+      - action: media_player.select_source
+        data:
+          source: Opt
+        target:
+          entity_id: media_player.speakers
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ _tv_was_off }}"
+        sequence:
+          - alias: Wait for TV = on (max 7s)
+            wait_template: "{{ is_state('binary_sensor.tv', 'on') }}"
+            timeout: "00:00:07"
+            continue_on_timeout: true
+          - delay: "00:00:01"
+  - action: script.reset_ma
+  - action: input_select.select_option
+    data:
+      option: watch
+    target:
+      entity_id: input_select.last_run_activity

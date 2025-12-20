@@ -1,0 +1,126 @@
+blueprint:
+  name: Room - Listen
+  description: |
+    Hardcoded script blueprint for "listen".
+  domain: script
+
+  input:
+    radio_input:
+      name: Radio Station
+      selector:
+        select:
+          custom_value: true
+          options:
+            - "Absolute Radio"
+            - "BBC Radio 1"
+            - "BBC Radio 2"
+            - "BBC Radio 3"
+            - "BBC Radio 3 Unwind"
+            - "BBC Radio 4"
+            - "BBC Radio 4 Extra"
+            - "BBC Radio 6 Music"
+            - "BBC Radio Sussex"
+            - "Capital London"
+            - "Classic FM"
+            - "FIP"
+            - "Heart"
+            - "KCRW Eclectic 24"
+            - "KCRW Live"
+            - "Magic Radio"
+            - "Naim Classical"
+            - "Naim Radio"
+            - "Radio Paradise"
+            - "Radio Paradise: Mellow Mix"
+            - "Radio X"
+            - "Virgin Radio"
+
+fields:
+  override:
+    name: Override
+    description: Only set limited variables (external/AirPlay path)
+    default: false
+    selector:
+      boolean: {}
+
+mode: single
+max_exceeded: silent
+
+sequence:
+  - action: input_select.select_option
+    data:
+      option: listen
+    target:
+      entity_id: input_select.activity
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ (override | default(false)) | bool }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: state
+                    entity_id: binary_sensor.tv
+                    state: "on"
+                sequence:
+                  - event: pihub.cmd
+                    event_data:
+                      dest: pi
+                      text: macro
+                      name: power_off
+                  - alias: "Wait for TV = off (max 7s)"
+                    wait_template: "{{ states('binary_sensor.tv') != 'on' }}"
+                    timeout: "00:00:07"
+                    continue_on_timeout: true
+                  - delay: "00:00:01"
+
+          - action: input_select.select_option
+            data:
+              option: listen
+            target:
+              entity_id: input_select.last_run_activity
+
+          - stop: override path complete
+    alias: If Override True
+
+  - action: script.radio_tuner
+    data:
+      station: !input radio_input
+
+  - choose:
+      - conditions:
+          - condition: not
+            conditions:
+              - condition: state
+                entity_id: media_player.speakers
+                state: Wifi
+                attribute: Source
+        sequence:
+          - action: media_player.select_source
+            data:
+              source: Wifi
+            target:
+              entity_id: media_player.speakers
+  - choose:
+      - conditions:
+          - condition: state
+            entity_id: binary_sensor.tv
+            state: "on"
+        sequence:
+          - event: pihub.cmd
+            event_data:
+              dest: pi
+              text: macro
+              name: power_off
+          - alias: "Wait for TV = off (max 7s)"
+            wait_template: "{{ states('binary_sensor.tv') != 'on' }}"
+            timeout: "00:00:07"
+            continue_on_timeout: true
+          - delay: "00:00:01"
+
+  - action: input_select.select_option
+    data:
+      option: listen
+    target:
+      entity_id:
+        - input_select.last_run_activity

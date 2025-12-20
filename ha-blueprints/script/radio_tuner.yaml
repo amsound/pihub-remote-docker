@@ -1,0 +1,80 @@
+blueprint:
+  name: Radio Tuner
+  domain: script
+  description: |
+    Tune Music Assistant radio stations by name or navigate next/prev with wrap-around behavior.
+    - Stores the current station position in an input_number helper (Use -1 as a neutral/off state)
+    - Accepts a comma-separated list of stations — custom radio dial
+    - Supports two optional inputs for navigation:
+      - station: Tune directly by name
+      - tune_action: Use "next" or "prev" to move along the dial (with wrap-around)
+
+  input:
+    station_list_string:
+      name: List of Radio Stations (comma-separated)
+      description: "Absolute Radio, BBC Radio 1, BBC Radio 2, BBC Radio 3, BBC Radio 3 Unwind, BBC Radio 4, BBC Radio 4 Extra, BBC Radio 6 Music, BBC Radio Sussex, Capital London, Classic FM, FIP, Heart, KCRW Eclectic 24, KCRW Live, Magic Radio, Naim Classical, Naim Radio, Radio Paradise, Radio Paradise: Mellow Mix, Radio X, Virgin Radio"
+      default: ""
+    station:
+      name: Station (leave blank - used by script)
+      default: ""
+    tune_action:
+      name: Tune Action (leave blank - used by script)
+      description: ""
+      default: ""
+
+mode: single
+
+sequence:
+  - variables:
+      station_list_raw: !input station_list_string
+      station_list: "{{ station_list_raw.split(',') | map('trim') | list }}"
+      index_helper_entity: input_number.radio_station_index
+      media_player_entity: media_player.music_assistant
+      index: "{{ states(index_helper_entity) | int(-1) }}"
+      total_stations: "{{ station_list | length }}"
+
+  - choose:
+      - conditions: "{{ total_stations == 0 }}"
+        sequence:
+          - stop: "Station list is empty."
+  - choose:
+      - conditions: "{{ station != '' and station in station_list }}"
+        sequence:
+          - variables:
+              new_index: "{{ station_list.index(station) }}"
+      - conditions: "{{ tune_action == 'next' }}"
+        sequence:
+          - variables:
+              new_index: >-
+                {% if index == -1 %}
+                  0
+                {% else %}
+                  {{ (index + 1) % total_stations }}
+                {% endif %}
+      - conditions: "{{ tune_action == 'prev' }}"
+        sequence:
+          - variables:
+              new_index: >-
+                {% if index == -1 %}
+                  {{ total_stations - 1 }}
+                {% else %}
+                  {{ (index - 1 + total_stations) % total_stations }}
+                {% endif %}
+    default:
+      - stop: "No valid station or action provided."
+
+  - service: input_number.set_value
+    target:
+      entity_id: input_number.radio_station_index
+    data:
+      value: "{{ new_index }}"
+
+  - variables:
+      selected_station: "{{ station_list[new_index] }}"
+
+  - service: music_assistant.play_media
+    target:
+      entity_id: media_player.music_assistant
+    data:
+      media_id: "{{ selected_station }}"
+      media_type: radio

@@ -1,0 +1,24 @@
+blueprint:
+  name: Reset MA
+  description: "Hardcoded reset for MA + radio index. No inputs."
+  domain: script
+
+mode: single
+
+sequence:
+  - alias: Clear Music Assistant Playlist
+    action: media_player.clear_playlist
+    target:
+      entity_id: media_player.music_assistant
+
+  - alias: Turn Off Music Assistant
+    action: media_player.turn_off
+    target:
+      entity_id: media_player.music_assistant
+
+  - alias: Reset Radio Station Index
+    action: input_number.set_value
+    target:
+      entity_id: input_number.radio_station_index
+    data:
+      value: -1

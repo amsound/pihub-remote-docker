@@ -19,6 +19,7 @@ from .dispatcher import Dispatcher
 from .input_unifying import UnifyingReader
 from .bt_le.controller import BTLEController
 from .macros import MACROS
+from .health import HealthServer
 
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,14 @@ async def main() -> None:
         grab=cfg.usb_grab,
     )
 
+    health = HealthServer(
+        host=cfg.health_host,
+        port=cfg.health_port,
+        ws=ws,
+        bt=bt,
+        reader=reader,
+    )
+
     print(
         f'[app] ws={cfg.ha_ws_url} event={cfg.ha_cmd_event} '
         f'activity={cfg.ha_activity}'
@@ -154,6 +163,7 @@ async def main() -> None:
     if not await bt.wait_ready(timeout=5.0):
         print("[app] BLE adapter not yet available; continuing without HID", flush=True)
     await reader.start()
+    await health.start()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         with contextlib.suppress(Exception):
@@ -161,6 +171,7 @@ async def main() -> None:
     await stop.wait()
 
     await reader.stop()
+    await health.stop()
     await ws.stop()
     with contextlib.suppress(Exception, asyncio.CancelledError):
         await ws_task
