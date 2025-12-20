@@ -220,7 +220,7 @@ class HAWS:
                 if data.get("type") == "event":
                     ev = data.get("event") or {}
                     ev_type = ev.get("event_type")
-                    edata = ev.get("data") or {}
+                    edata = dict(ev.get("data") or {})
 
                     # 1) Triggered state change for our one entity (subscribe_trigger).
                     #    No need to re-check entity_id, but do it defensively.
@@ -245,9 +245,11 @@ class HAWS:
                             if t == "macro":
                                 print(f"[cmd] macro {edata.get('name', '?')}")
                             elif t == "ble_key":
+                                hold_ms = self._sanitize_hold_ms(edata.get("hold_ms"))
+                                edata["hold_ms"] = hold_ms
                                 print(
                                     f"[cmd] ble_key {edata.get('usage', '?')}/{edata.get('code', '?')} "
-                                    f"hold={int(edata.get('hold_ms', 40))}ms"
+                                    f"hold={hold_ms}ms"
                                 )
                             else:
                                 print(f"[cmd] {t}")
@@ -280,3 +282,13 @@ class HAWS:
         if session is None or session.closed:
             self._session = session = aiohttp.ClientSession()
         return session
+
+    def _sanitize_hold_ms(self, val: Any, *, default: int = 40) -> int:
+        """Return a whitelisted hold duration, falling back to default."""
+
+        allowed = {0, 40, 80, 160, 320}
+        try:
+            parsed = int(val)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed in allowed else default
