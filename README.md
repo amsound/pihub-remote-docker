@@ -6,7 +6,7 @@ It listens to RF key events from a Logitech Harmony Remote (simple, no display) 
 * **Home Assistant (HA)** over WebSocket (`pihub.cmd` events)
 * **BLE HID** (Consumer + Keyboard) for things like Apple TV
 
-It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**.
+It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No Harmony Hub or cloud required.
 
 ---
 
