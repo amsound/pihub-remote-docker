@@ -75,24 +75,24 @@ services:
 
 > ✅ I've tested with these settings and works without full blown `--privileged`.
 
-### Option B) Build (multi-stage, small runtime)
+### Option B) Build locally then run with docker-compose.yml:
 
 ```bash
 # From repo root
+git fetch origin
+git reset --hard origin/main
 export DOCKER_BUILDKIT=1
 docker build -f Dockerfile -t pihub:latest .
 ```
 
-then:
+then push image to docker hub:
 
-```bash
-docker run --rm \
-  --network host \
-  -v /dev/input:/dev/input:ro \
-  -v /var/run/dbus:/var/run/dbus:ro \
-  -e HA_URL="ws://<ha-host>:8123/api/websocket" \
-  -e HA_TOKEN="<your-long-lived-access-token>" \
-  pihub:latest
+```
+VER=x.x.x
+docker tag pihub:latest a1exm/pihub:$VER
+docker tag pihub:latest a1exm/pihub:latest
+docker push a1exm/pihub:$VER
+docker push a1exm/pihub:latest
 ```
 
 ---
@@ -143,13 +143,13 @@ PiHub uses the existing **bidirectional** `pihub.cmd` convention and **does not 
 Example:
 
 ```json
-{"dest":"ha","text":"media_next"}
+{"dest": "ha", "text": "media_next"}
 ```
 
 Volume
 
 ```json
-{"do": "emit", "text": "volume_up", "repeat": true}
+{"dest": "ha", "do": "emit", "text": "volume_up", "repeat": true}
 ```
 
 ### Home Assistant → PiHub (commands/state)
@@ -157,24 +157,20 @@ Volume
 * Activity/state: push updates for `input_select.activity` to switch keymap modes
 * Commands, e.g.:
 
-**Macro (HA-driven only):**
+**Macro:**
 
 ```json
-{dest: pi
-text: macro
-name: power_on}
+{"dest": "pi", "text": "macro", "name": "power_on"}
 ```
 
 **Send one BLE key:**
 
 ```json
-(dest: pi
-text: ble_key
-usage: consumer
-code: menu)
+("dest": "pi", "text": "ble_key", "usage": "consumer", "code": "menu")
 ```
 
 > Macros: **power_on / power_off **, executed from HA (Pi does not run macro sequences).
+
 > BLE: per-button may use **consumer or keyboard** usages. 40ms defaut hold.
 
 ---
