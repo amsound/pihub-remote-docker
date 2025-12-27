@@ -286,7 +286,7 @@ class HAWS:
     def _sanitize_hold_ms(self, val: Any, *, default: int = 40) -> int:
         """Return a whitelisted hold duration, falling back to default."""
 
-        allowed = {0, 40, 80, 160, 320}
+        allowed = {0, 40, 80, 100, 500, 2000}
         try:
             parsed = int(val)
         except (TypeError, ValueError):
