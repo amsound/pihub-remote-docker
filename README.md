@@ -4,7 +4,7 @@ PiHub turns a Raspberry Pi into a tiny, fast “universal remote” bridge.
 It listens to RF key events from a Logitech Harmony Remote (simple, no display) paired to a Logitech Unifying receiver and sends actions to:
 
 * **Home Assistant (HA)** over WebSocket (`pihub.cmd` events)
-* **BLE HID** (Consumer + Keyboard) for things like Apple TV
+* **BLE HID** (Consumer + Keyboard) tested with Apple TV 4k 3rd Gen.
 
 It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No Harmony Hub or cloud required.
 
