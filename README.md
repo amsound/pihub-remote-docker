@@ -162,15 +162,13 @@ Volume
 ```json
 {"dest": "pi", "text": "macro", "name": "power_on"}
 ```
+> Options: **power_on / power_off **, executed from HA (Pi does not run macro sequences).
 
-**Send one BLE key:**
+**Send a BLE key:**
 
 ```json
-("dest": "pi", "text": "ble_key", "usage": "consumer", "code": "menu")
+{"dest": "pi", "text": "ble_key", "usage": "consumer", "code": "menu"}
 ```
-
-> Macros: **power_on / power_off **, executed from HA (Pi does not run macro sequences).
-
 > BLE: per-button may use **consumer or keyboard** usages. 40ms defaut hold.
 
 ---
