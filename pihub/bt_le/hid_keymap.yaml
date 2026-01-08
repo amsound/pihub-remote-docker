@@ -80,6 +80,8 @@ consumer:
   record:       0x00B2
   rewind:       0x00B4
   fast_forward: 0x00B3
+  volume_up:    0x00E9
+  volume_down:  0x00EA
 
   # App/OS navigation
   menu:         0x0040
