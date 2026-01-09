@@ -35,7 +35,7 @@ It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No 
 
 ## 🚀 Quick Start
 
-### Option A) docker-compose.yml & prebuilt docker image (recommended)
+### docker-compose.yml & prebuilt docker image
 
 ```yaml
 services:
@@ -73,10 +73,14 @@ services:
       - ./homeassistant:/config
       - /etc/localtime:/etc/localtime:ro
 ```
+then
+```bash
+docker compose up -d
+```
 
 > ✅ I've tested with these settings and works without full blown `--privileged`.
 
-### Option B) Build locally then run with docker-compose.yml:
+### Build then push to docker hub (personal reminder):
 
 ```bash
 # From repo root
