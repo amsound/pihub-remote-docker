@@ -1,3 +1,4 @@
+
 # PiHub – Universal Remote Bridge (Harmony Remote & Pi)
 
 PiHub turns a Raspberry Pi into a tiny, fast “universal remote” bridge.
@@ -162,7 +163,7 @@ Volume
 ```json
 {"dest": "pi", "text": "macro", "name": "power_on"}
 ```
-> Options: **power_on / power_off **, executed from HA (Pi does not run macro sequences).
+> Options: **power_on / power_off / return_home**, executed from HA (Pi does not run macro sequences).
 
 **Send a BLE key:**
 
@@ -170,6 +171,7 @@ Volume
 {"dest": "pi", "text": "ble_key", "usage": "consumer", "code": "menu"}
 ```
 > BLE: per-button may use **consumer or keyboard** usages. 40ms defaut hold.
+Optionally include `"hold_ms": "40"` - values accected: `0, 40, 80, 100, 500, 2000.`
 
 ---
 
