@@ -30,4 +30,11 @@ MACROS: Dict[str, List[Step]] = {
         {"usage": "consumer", "code": "menu", "hold_ms": 40},
         {"usage": "consumer", "code": "power", "hold_ms": 2000},
     ],
+    "return_home": [
+        {"usage": "consumer", "code": "stop", "hold_ms": 40},
+        {"usage": "consumer", "code": "ac_home", "hold_ms": 40},
+        {"usage": "consumer", "code": "ac_home", "hold_ms": 40},
+        {"usage": "consumer", "code": "menu", "hold_ms": 40},
+        {"usage": "consumer", "code": "menu", "hold_ms": 40},
+    ],
 }
