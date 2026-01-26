@@ -25,6 +25,7 @@ class Dispatcher:
           "min_hold_ms"?: <int>   # apply to HA emits only
         }
       - { "do": "ble",  "usage": "keyboard"|"consumer", "code": "<hid-name>" }
+      - { "do": "noop" }  # explicit no-op action
     """
 
     def __init__(self, cfg: Any, send_cmd: Callable[..., Awaitable[None]], bt_le: Any) -> None:
@@ -35,6 +36,7 @@ class Dispatcher:
         # Load full keymap document, then split into parts we use
         km = self._load_keymap()
         try:
+            self._validate_keymap(km)
             self._scancode_map: Dict[str, str] = dict(km["scancode_map"])
             self._bindings: Dict[str, Dict[str, List[Dict[str, Any]]]] = dict(km["activities"])
             if not isinstance(self._scancode_map, dict) or not isinstance(self._bindings, dict):
@@ -174,6 +176,9 @@ class Dispatcher:
     ) -> None:
         kind = a.get("do")
 
+        if kind == "noop":
+            return
+
         # Optional edge filter for non-BLE actions (defaults to 'down' in this build)
         when = a.get("when", "down")
         if kind != "ble" and edge != when:
@@ -198,8 +203,8 @@ class Dispatcher:
                 return
 
             extras = {k: v for k, v in a.items() if k not in {"do", "when", "text", "repeat", "min_hold_ms"}}
-            want_repeat  = bool(a.get("repeat"))
-            min_hold_ms  = int(a.get("min_hold_ms", 0))
+            want_repeat = bool(a.get("repeat"))
+            min_hold_ms = self._safe_int(a.get("min_hold_ms"), default=0)
 
             loop = asyncio.get_running_loop()
 
@@ -279,3 +284,32 @@ class Dispatcher:
             "\nSet KEYMAP_PATH or cfg.keymap_path to an absolute file path, "
             "or bake /app/pihub/assets/keymap.json into the image."
         )
+
+    @staticmethod
+    def _safe_int(value: Any, *, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _validate_keymap(doc: dict) -> None:
+        if not isinstance(doc, dict):
+            raise ValueError("keymap.json must be a dict")
+
+        activities = doc.get("activities")
+        if not isinstance(activities, dict):
+            raise ValueError("keymap.json 'activities' must be a dict")
+
+        for activity, mapping in activities.items():
+            if not isinstance(mapping, dict):
+                raise ValueError(f"activity '{activity}' must map to a dict of actions")
+            for rem_key, actions in mapping.items():
+                if not isinstance(actions, list):
+                    raise ValueError(f"actions for '{activity}.{rem_key}' must be a list")
+                for idx, action in enumerate(actions):
+                    if not isinstance(action, dict):
+                        raise ValueError(f"action {activity}.{rem_key}[{idx}] must be a dict")
+                    kind = action.get("do")
+                    if kind not in {"emit", "ble", "noop"}:
+                        raise ValueError(f"action {activity}.{rem_key}[{idx}] has unknown do={kind!r}")
