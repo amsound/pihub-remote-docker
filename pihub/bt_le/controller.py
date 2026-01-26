@@ -73,7 +73,7 @@ class HIDTransportBLE:
     def available(self) -> bool:
         """Return True while the BLE transport is ready to send keys."""
 
-        return self._available
+        return self._runtime is not None
 
     async def wait_for_critical_failure(self, stop_event: Optional[asyncio.Event] = None) -> str:
         """Block until the transport should be restarted.
