@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import time
 from pathlib import Path
 from contextlib import suppress
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -14,6 +16,8 @@ REPEAT_INITIAL_MS = int(os.getenv("REPEAT_INITIAL_MS", "400"))
 REPEAT_RATE_MS    = int(os.getenv("REPEAT_RATE_MS", "400"))
 
 EdgeCB = Callable[[str, str], Awaitable[None]] | Callable[[str, str], None]
+
+logger = logging.getLogger(__name__)
 
 
 class Dispatcher:
@@ -28,10 +32,12 @@ class Dispatcher:
       - { "do": "noop" }  # explicit no-op action
     """
 
-    def __init__(self, cfg: Any, send_cmd: Callable[..., Awaitable[None]], bt_le: Any) -> None:
+    def __init__(self, cfg: Any, send_cmd: Callable[..., Awaitable[bool]], bt_le: Any) -> None:
         self._cfg = cfg
         self._send_cmd = send_cmd
         self._bt = bt_le
+        self._debug_cmd = bool(getattr(cfg, "debug_cmd", False) or os.getenv("DEBUG_CMD") == "1")
+        self._last_cmd_fail_log = 0.0
 
         # Load full keymap document, then split into parts we use
         km = self._load_keymap()
@@ -60,7 +66,7 @@ class Dispatcher:
         # Summary: count activities and scancodes
         acts = len(self._bindings)
         scan_total = len(self._scancode_map)
-        print(f"[dispatcher] keymap loaded: {acts} activities, {scan_total} scancodes")
+        logger.info("[dispatcher] keymap loaded: %s activities, %s scancodes", acts, scan_total)
 
     @property
     def scancode_map(self) -> Dict[str, str]:
@@ -106,7 +112,7 @@ class Dispatcher:
             try:
                 await asyncio.sleep(REPEAT_INITIAL_MS / 1000.0)
                 while True:
-                    await self._send_cmd(text=text, **extras)
+                    await self._send_with_log(text=text, **extras)
                     await asyncio.sleep(REPEAT_RATE_MS / 1000.0)
             except asyncio.CancelledError:
                 pass
@@ -217,7 +223,7 @@ class Dispatcher:
                     elapsed_ms = int((loop.time() - t0) * 1000.0)
                     if elapsed_ms < min_hold_ms:
                         return
-                await self._send_cmd(text=text, **extras)
+                await self._send_with_log(text=text, **extras)
                 # no repeat on 'up'-triggered emits
                 return
 
@@ -234,7 +240,7 @@ class Dispatcher:
                     )
                     return
                 # immediate fire + optional repeat
-                await self._send_cmd(text=text, **extras)
+                await self._send_with_log(text=text, **extras)
                 if want_repeat and rem_key:
                     await self._start_repeat(rem_key, text, extras)
                 return
@@ -284,6 +290,18 @@ class Dispatcher:
             "\nSet KEYMAP_PATH or cfg.keymap_path to an absolute file path, "
             "or bake /app/pihub/assets/keymap.json into the image."
         )
+
+    async def _send_with_log(self, text: str, **extras: Any) -> None:
+        success = await self._send_cmd(text=text, **extras)
+        if success:
+            return
+        if not self._debug_cmd:
+            return
+        now = time.monotonic()
+        if now - self._last_cmd_fail_log < 5.0:
+            return
+        self._last_cmd_fail_log = now
+        logger.warning("[dispatcher] HA command send failed: %s", text)
 
     @staticmethod
     def _safe_int(value: Any, *, default: int = 0) -> int:

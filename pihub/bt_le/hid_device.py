@@ -5,6 +5,7 @@ import asyncio
 import os
 import contextlib
 import inspect
+import logging
 import time
 
 from bluez_peripheral.util import get_message_bus, Adapter, is_bluez_available
@@ -17,6 +18,8 @@ from bluez_peripheral.gatt.descriptor import DescriptorFlags as DescFlags
 from dbus_fast.constants import MessageType
 from dbus_fast import Variant
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 _hid_service_singleton = None  # set inside start_hid()
 
@@ -81,7 +84,7 @@ async def _adv_unregister(bus, advert) -> bool:
             return True
         return False
     except Exception as e:
-        print(f"[hid] adv unregister error: {e!r}")
+        logger.warning("[hid] adv unregister error: %r", e)
         return False
 
 async def _adv_register_and_start(bus, advert) -> str:
@@ -105,7 +108,7 @@ async def _adv_register_and_start(bus, advert) -> str:
 
         return "registered" if did_register else "noop"
     except Exception as e:
-        print(f"[hid] adv register/start error: {e!r}")
+        logger.warning("[hid] adv register/start error: %r", e)
         return "error"
 
 # --------------------------
@@ -239,7 +242,7 @@ async def watch_link(bus, advert, hid: "HIDService"):
             await trust_device(bus, dev_path)
         human = await _get_device_alias_or_name(bus, dev_path)
         label = human if human else dev_path
-        print(f"[hid] connected: {label}")
+        logger.info("[hid] connected: %s", label)
 
 
         # Services resolved first
@@ -259,23 +262,23 @@ async def watch_link(bus, advert, hid: "HIDService"):
 
         # Link ready: host subscribed to at least one input
         hid._link_ready = True
-        print(f"[hid] link ready — notify: kb={kb} boot={boot} cc={cc}")
+        logger.info("[hid] link ready — notify: kb=%s boot=%s cc=%s", kb, boot, cc)
 
         # Stop advertising while connected
         if await _adv_unregister(bus, advert):
-            print("[hid] advertising unregistered (connected device)")
+            logger.info("[hid] advertising unregistered (connected device)")
 
         # Block here until disconnect
         await wait_for_disconnect(bus, dev_path)
 
         # Link down
         hid._link_ready = False
-        print("[hid] disconnected")
+        logger.info("[hid] disconnected")
 
         # Re-register (and start) advertising for next client
         mode = await _adv_register_and_start(bus, advert)
         if mode not in ("noop", "error"):
-            print("[hid] advertising registered (no device)")
+            logger.info("[hid] advertising registered (no device)")
 
 # --------------------------
 # GATT Services
@@ -492,13 +495,13 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
             await adapter.set_powered(True)
             await asyncio.sleep(0.8)
         except Exception as e:
-            print(f"[hid] Bluetooth adapter power-cycle failed: {e}")
+            logger.warning("[hid] Bluetooth adapter power-cycle failed: %s", e)
     
     # --- Register GATT application (with one retry) ---
     try:
         await app.register(bus, adapter=adapter)
     except Exception as e:
-        print(f"[hid] BTLE service register failed: {e} — retrying after power-cycle")
+        logger.warning("[hid] BTLE service register failed: %s — retrying after power-cycle", e)
         await _power_cycle_adapter()
         try:
             await app.register(bus, adapter=adapter)
@@ -516,7 +519,7 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
     )
     mode = await _adv_register_and_start(bus, advert)
     if mode in ("error", "noop"):
-        print(f"[hid] advert register/start failed ({mode}) — retrying after power-cycle")
+        logger.warning("[hid] advert register/start failed (%s) — retrying after power-cycle", mode)
         with contextlib.suppress(Exception):
             await advert.unregister()
         await _power_cycle_adapter()
@@ -535,7 +538,7 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
                 await app.unregister()
             raise RuntimeError(f"Advertising register failed after retry: mode={mode}")
     
-    print(f'[hid] advertising registered as {device_name} on {adapter_name}')
+    logger.info('[hid] advertising registered as %s on %s', device_name, adapter_name)
     
     # Start link watcher (flips _link_ready and prints concise pairing log)
     link_task = asyncio.create_task(watch_link(bus, advert, hid), name="hid_watch_link")

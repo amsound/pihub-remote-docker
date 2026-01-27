@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
 # Import module so we can read the runtime singleton AFTER start_hid()
 from . import hid_device as _hd
 from .hid_client import HIDClient
+
+logger = logging.getLogger(__name__)
 
 
 class HIDTransportBLE:
@@ -48,7 +51,11 @@ class HIDTransportBLE:
             )
 
         if self._debug:
-            print(f'[hid] advertising registered as "{self._device_name}" on "{self._adapter}"', flush=True)
+            logger.debug(
+                '[hid] advertising registered as "%s" on "%s"',
+                self._device_name,
+                self._adapter,
+            )
 
     async def stop(self) -> None:
         """Tear down the HID service."""
@@ -155,12 +162,12 @@ class HIDTransportBLE:
         rep = getattr(svc, "input_keyboard", None)
         if rep is not None and hasattr(rep, "changed"):
             try:
-                rep.changed(report)
-                if self._debug:
-                    print("[bt] keyboard report changed", flush=True)
+                    rep.changed(report)
+                    if self._debug:
+                        logger.debug("[bt] keyboard report changed")
             except Exception as e:
                 if self._debug:
-                    print(f"[bt] keyboard report changed error: {e}", flush=True)
+                    logger.debug("[bt] keyboard report changed error: %s", e)
 
         if self.SEND_BOTH_KB:
             boot = getattr(svc, "boot_keyboard_input", None)
@@ -168,10 +175,10 @@ class HIDTransportBLE:
                 try:
                     boot.changed(report)
                     if self._debug:
-                        print("[bt] keyboard boot changed", flush=True)
+                        logger.debug("[bt] keyboard boot changed")
                 except Exception as e:
                     if self._debug:
-                        print(f"[bt] keyboard boot changed error: {e}", flush=True)
+                        logger.debug("[bt] keyboard boot changed error: %s", e)
 
     def notify_consumer(self, usage_id: int, pressed: bool) -> None:
         """
@@ -188,10 +195,10 @@ class HIDTransportBLE:
                 cons.changed(payload)
                 if self._debug:
                     edge = "down" if pressed else "up"
-                    print(f"[bt] consumer changed 0x{usage_id:04X} {edge}", flush=True)
+                    logger.debug("[bt] consumer changed 0x%04X %s", usage_id, edge)
             except Exception as e:
                 if self._debug:
-                    print(f"[bt] consumer changed error: {e}", flush=True)
+                    logger.debug("[bt] consumer changed error: %s", e)
 
 
 class BTLEController:
@@ -228,7 +235,7 @@ class BTLEController:
             await asyncio.wait_for(self._ready.wait(), timeout=5.0)
         except asyncio.TimeoutError:
             if self._debug:
-                print("[bt] BLE controller still waiting for adapter", flush=True)
+                logger.debug("[bt] BLE controller still waiting for adapter")
 
     async def stop(self) -> None:
         """Stop the supervisor and tear down the transport."""
@@ -271,7 +278,7 @@ class BTLEController:
                     raise
                 except Exception as exc:
                     self._available = False
-                    print(f"[bt] transport start failed: {exc}", flush=True)
+                    logger.warning("[bt] transport start failed: %s", exc)
                     await self._sleep_with_stop(backoff)
                     backoff = min(backoff * 2.0, 30.0)
                     continue
@@ -291,7 +298,7 @@ class BTLEController:
 
                 delay = backoff
                 backoff = min(backoff * 2.0, 30.0)
-                print(f"[bt] restarting after {reason}; retry in {delay:.1f}s", flush=True)
+                logger.info("[bt] restarting after %s; retry in %.1fs", reason, delay)
                 await self._sleep_with_stop(delay)
         finally:
             self._available = False

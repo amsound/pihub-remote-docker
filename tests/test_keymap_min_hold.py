@@ -30,8 +30,8 @@ def test_min_hold_ms_invalid_value_is_safe(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    async def _send_cmd(**_kwargs) -> None:
-        return None
+    async def _send_cmd(**_kwargs) -> bool:
+        return True
 
     dispatcher = Dispatcher(cfg=_Cfg(str(keymap)), send_cmd=_send_cmd, bt_le=_BT())
     dispatcher._activity = "watch"
