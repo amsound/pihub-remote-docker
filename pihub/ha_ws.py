@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 from typing import Any, Awaitable, Callable, Optional
 
@@ -12,6 +13,8 @@ import contextlib
 
 OnActivity = Callable[[str], Awaitable[None]] | Callable[[str], None]
 OnCmd      = Callable[[dict], Awaitable[None]] | Callable[[dict], None]
+
+logger = logging.getLogger(__name__)
 
 
 class HAWS:
@@ -72,7 +75,7 @@ class HAWS:
                 raise
             except Exception as exc:
                 if not self._stopping.is_set():
-                    print(f"[ws] error: {exc!r}", flush=True)
+                    logger.warning("[ws] error: %r", exc)
                 jitter = random.uniform(0.75, 1.25)
                 timeout = min(60.0, delay) * jitter
                 try:
@@ -123,7 +126,7 @@ class HAWS:
         try:
             await self._auth(ws)
 
-            print("[ws] connected")  # log *before* seed so order is consistent
+            logger.info("[ws] connected")  # log *before* seed so order is consistent
 
             # Subscribe to ONLY the target entity via trigger.
             await self._subscribe_trigger_entity(ws, self._activity_entity)
@@ -138,7 +141,7 @@ class HAWS:
             await self._recv_loop(ws)
 
         finally:
-            print("[ws] disconnected")
+            logger.info("[ws] disconnected")
             await self._close_ws()
 
     async def _auth(self, ws: aiohttp.ClientWebSocketResponse) -> None:
@@ -168,7 +171,7 @@ class HAWS:
                     if st.get("entity_id") == self._activity_entity:
                         val = str(st.get("state", "") or "").strip()
                         if val:
-                            print(f"[activity] {val}")
+                            logger.info("[activity] %s", val)
                             self._last_activity = val
                             res = self._on_activity(val)
                             if asyncio.iscoroutine(res):
@@ -231,7 +234,7 @@ class HAWS:
                             new_state = to_state.get("state")
                             if isinstance(new_state, str) and new_state:
                                 if new_state != self._last_activity:
-                                    print(f"[activity] {new_state}")
+                                    logger.info("[activity] %s", new_state)
                                     self._last_activity = new_state
                                 res = self._on_activity(new_state)
                                 if asyncio.iscoroutine(res):
@@ -243,16 +246,18 @@ class HAWS:
                         if edata.get("dest") == "pi":
                             t = edata.get("text", "?")
                             if t == "macro":
-                                print(f"[cmd] macro {edata.get('name', '?')}")
+                                logger.info("[cmd] macro %s", edata.get("name", "?"))
                             elif t == "ble_key":
                                 hold_ms = self._sanitize_hold_ms(edata.get("hold_ms"))
                                 edata["hold_ms"] = hold_ms
-                                print(
-                                    f"[cmd] ble_key {edata.get('usage', '?')}/{edata.get('code', '?')} "
-                                    f"hold={hold_ms}ms"
+                                logger.info(
+                                    "[cmd] ble_key %s/%s hold=%sms",
+                                    edata.get("usage", "?"),
+                                    edata.get("code", "?"),
+                                    hold_ms,
                                 )
                             else:
-                                print(f"[cmd] {t}")
+                                logger.info("[cmd] %s", t)
                             res = self._on_cmd(edata)
                             if asyncio.iscoroutine(res):
                                 await res

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import glob
+import logging
 import os
 import random
 from typing import Awaitable, Callable, Dict, Optional
@@ -12,6 +13,8 @@ from typing import Awaitable, Callable, Dict, Optional
 from evdev import InputDevice, ecodes
 
 EdgeCallback = Callable[[str, str], Awaitable[None]] | Callable[[str, str], None]
+
+logger = logging.getLogger(__name__)
 
 def _jittered(t: float) -> float:
     """±25% jitter, capped to 10s."""
@@ -127,7 +130,7 @@ class UnifyingReader:
                     # continue without grab
                     pass
     
-            print(f'[usb] open {path} grabbed={str(grabbed).lower()}', flush=True)
+            logger.info("[usb] open %s grabbed=%s", path, str(grabbed).lower())
     
             # We have an open device; reset backoff
             backoff = 1.0
@@ -165,7 +168,7 @@ class UnifyingReader:
                                 kname = ecodes.KEY[ev.code]
                             except Exception:
                                 kname = f"KEY_{ev.code}"
-                            print(f"[usb] unmapped key: msc=None name={kname}")
+                            logger.debug("[usb] unmapped key: msc=None name=%s", kname)
                         continue
             
                     val = ev.value
@@ -195,7 +198,7 @@ class UnifyingReader:
                 break
 
             except Exception as exc:
-                print(f"[usb] reader error: {exc!r}", flush=True)
+                logger.warning("[usb] reader error: %r", exc)
                 await asyncio.sleep(1.0)
 
             finally:
@@ -226,7 +229,7 @@ class UnifyingReader:
 
     async def _emit(self, rem_key: str, edge: str) -> None:
         if os.getenv("DEBUG_INPUT") == "1":
-            print(f"[usb] {rem_key} {edge}")
+            logger.debug("[usb] %s %s", rem_key, edge)
         queue = self._edge_queue
         if queue is None:
             return
@@ -248,7 +251,7 @@ class UnifyingReader:
                     if asyncio.iscoroutine(res):
                         await res
                 except Exception as exc:
-                    print(f"[usb] dispatch error: {exc!r}", flush=True)
+                    logger.warning("[usb] dispatch error: %r", exc)
                 finally:
                     queue.task_done()
         except asyncio.CancelledError:

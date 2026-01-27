@@ -4,10 +4,13 @@ from __future__ import annotations
 import os
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 Usage = Literal["keyboard", "consumer"]
+
+logger = logging.getLogger(__name__)
 
 class HIDClient:
     """Encode symbolic keys to HID payloads and forward to the transport."""
@@ -22,12 +25,12 @@ class HIDClient:
         if usage == "keyboard":
             down = self._encode_keyboard_down(code)
             if self._debug:
-                print(f'[bt] keyboard "{code}" down')
+                logger.debug('[bt] keyboard "%s" down', code)
             self._hid.notify_keyboard(down)
         elif usage == "consumer":
             usage_id = self._encode_consumer_usage(code)
             if self._debug:
-                print(f'[bt] consumer "{code}" down (0x{usage_id:04X})')
+                logger.debug('[bt] consumer "%s" down (0x%04X)', code, usage_id)
             if usage_id:
                 self._hid.notify_consumer(usage_id, True)
 
@@ -35,12 +38,12 @@ class HIDClient:
         """Send a logical key-up edge."""
         if usage == "keyboard":
             if self._debug:
-                print(f'[bt] keyboard "{code}" up')
+                logger.debug('[bt] keyboard "%s" up', code)
             self._hid.notify_keyboard(b"\x00\x00\x00\x00\x00\x00\x00\x00")
         elif usage == "consumer":
             usage_id = self._encode_consumer_usage(code)
             if self._debug:
-                print(f'[bt] consumer "{code}" up (0x{usage_id:04X})')
+                logger.debug('[bt] consumer "%s" up (0x%04X)', code, usage_id)
             if usage_id:
                 self._hid.notify_consumer(usage_id, False)
 

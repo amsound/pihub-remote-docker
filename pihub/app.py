@@ -97,7 +97,7 @@ async def main() -> None:
     try:
         token = cfg.load_token()
     except RuntimeError as exc:
-        print(f"[app] Cannot start without Home Assistant token: {exc}", flush=True)
+        logger.error("[app] Cannot start without Home Assistant token: %s", exc)
         raise SystemExit(1) from exc
 
     bt = BTLEController(adapter=cfg.ble_adapter, device_name=cfg.ble_device_name, debug=cfg.debug_bt)
@@ -136,9 +136,11 @@ async def main() -> None:
         reader=reader,
     )
 
-    print(
-        f'[app] ws={cfg.ha_ws_url} event={cfg.ha_cmd_event} '
-        f'activity={cfg.ha_activity}'
+    logger.info(
+        "[app] ws=%s event=%s activity=%s",
+        cfg.ha_ws_url,
+        cfg.ha_cmd_event,
+        cfg.ha_activity,
     )
 
     stop = asyncio.Event()
@@ -151,9 +153,9 @@ async def main() -> None:
         except asyncio.CancelledError:
             return
         except Exception as exc:  # pragma: no cover - defensive logging
-            print(f"[app] Home Assistant task crashed: {exc!r}", flush=True)
+            logger.error("[app] Home Assistant task crashed: %r", exc)
         else:
-            print("[app] Home Assistant task exited unexpectedly", flush=True)
+            logger.warning("[app] Home Assistant task exited unexpectedly")
         stop.set()
 
     ws_task = asyncio.create_task(ws.start(), name="ha_ws")
@@ -161,7 +163,7 @@ async def main() -> None:
 
     await bt.start()
     if not await bt.wait_ready(timeout=5.0):
-        print("[app] BLE adapter not yet available; continuing without HID", flush=True)
+        logger.warning("[app] BLE adapter not yet available; continuing without HID")
     await reader.start()
     await health.start()
 
