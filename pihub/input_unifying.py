@@ -8,6 +8,7 @@ import glob
 import logging
 import os
 import random
+import time
 from typing import Awaitable, Callable, Dict, Optional
 
 from evdev import InputDevice, ecodes
@@ -38,23 +39,27 @@ class UnifyingReader:
         on_edge: EdgeCallback,
         *,
         grab: bool = True,
+        edge_queue_maxsize: int = 512,
     ) -> None:
         self._device_path = (device_path or "").strip() or None
         self._map = scancode_map
         self._on_edge = on_edge
         self._grab = grab
+        self._edge_queue_maxsize = edge_queue_maxsize
 
         self._task: Optional[asyncio.Task] = None
         self._edge_worker: Optional[asyncio.Task] = None
         self._edge_queue: Optional[asyncio.Queue[tuple[str, str] | None]] = None
         self._stop = asyncio.Event()
+        self._dropped_edges = 0
+        self._last_drop_log = 0.0
 
     # ── Public API ───────────────────────────────────────────────────────────
     async def start(self) -> None:
         """Begin watching the configured input device."""
         if self._task is None:
             self._stop.clear()
-            self._edge_queue = asyncio.Queue()
+            self._edge_queue = asyncio.Queue(maxsize=self._edge_queue_maxsize)
             self._edge_worker = asyncio.create_task(
                 self._drain_edges(), name="unifying_edge_worker"
             )
@@ -233,7 +238,17 @@ class UnifyingReader:
         queue = self._edge_queue
         if queue is None:
             return
-        queue.put_nowait((rem_key, edge))
+        try:
+            queue.put_nowait((rem_key, edge))
+        except asyncio.QueueFull:
+            self._dropped_edges += 1
+            now = time.monotonic()
+            if now - self._last_drop_log >= 10.0:
+                self._last_drop_log = now
+                logger.warning(
+                    "[usb] edge queue full; dropped=%d",
+                    self._dropped_edges,
+                )
 
     async def _drain_edges(self) -> None:
         queue = self._edge_queue
