@@ -33,10 +33,6 @@ class Config:
     health_host: str
     health_port: int
 
-    # debug toggles
-    debug_bt: bool
-    debug_input: bool
-    debug_cmd: bool
 
     @staticmethod
     def load() -> "Config":
@@ -60,10 +56,6 @@ class Config:
         except ValueError:
             health_port = 9123
 
-        debug_bt     = _getenv_bool("DEBUG_BT", False)
-        debug_input  = _getenv_bool("DEBUG_INPUT", False)
-        debug_cmd    = _getenv_bool("DEBUG_CMD", False)
-
         return Config(
             ha_ws_url=ha_ws_url,
             ha_token_file=ha_token_file,
@@ -76,9 +68,6 @@ class Config:
             keymap_path=keymap_path,
             health_host=health_host,
             health_port=health_port,
-            debug_bt=debug_bt,
-            debug_input=debug_input,
-            debug_cmd=debug_cmd,
         )
 
     def load_token(self) -> str:
