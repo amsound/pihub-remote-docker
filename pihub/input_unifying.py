@@ -145,7 +145,7 @@ class UnifyingReader:
             _map = self._map
             _resolve = self._resolve_logical_key
             _emit = self._emit
-            _debug_unknown = (os.getenv("DEBUG_INPUT_UNK") == "1")
+            _debug_unknown = logger.isEnabledFor(logging.DEBUG)
             
             try:
                 async for ev in dev.async_read_loop():
@@ -228,7 +228,7 @@ class UnifyingReader:
         return None
 
     async def _emit(self, rem_key: str, edge: str) -> None:
-        if os.getenv("DEBUG_INPUT") == "1":
+        if logger.isEnabledFor(logging.DEBUG):
             logger.debug("[usb] %s %s", rem_key, edge)
         queue = self._edge_queue
         if queue is None:

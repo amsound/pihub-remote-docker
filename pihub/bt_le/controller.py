@@ -21,10 +21,9 @@ class HIDTransportBLE:
     # Send only report-mode keyboard by default (tvOS/iOS subs to report input).
     SEND_BOTH_KB = False
 
-    def __init__(self, *, adapter: str, device_name: str, debug: bool = False) -> None:
+    def __init__(self, *, adapter: str, device_name: str) -> None:
         self._adapter = adapter
         self._device_name = device_name
-        self._debug = debug
 
         self._shutdown: Optional[Callable[[], asyncio.Future]] = None
         self._hid_service = None  # set in start()
@@ -50,7 +49,7 @@ class HIDTransportBLE:
                 "ensure start_hid() sets _hid_service_singleton = hid"
             )
 
-        if self._debug:
+        if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 '[hid] advertising registered as "%s" on "%s"',
                 self._device_name,
@@ -162,11 +161,11 @@ class HIDTransportBLE:
         rep = getattr(svc, "input_keyboard", None)
         if rep is not None and hasattr(rep, "changed"):
             try:
-                    rep.changed(report)
-                    if self._debug:
-                        logger.debug("[bt] keyboard report changed")
+                rep.changed(report)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("[bt] keyboard report changed")
             except Exception as e:
-                if self._debug:
+                if logger.isEnabledFor(logging.DEBUG):
                     logger.debug("[bt] keyboard report changed error: %s", e)
 
         if self.SEND_BOTH_KB:
@@ -174,10 +173,10 @@ class HIDTransportBLE:
             if boot is not None and hasattr(boot, "changed"):
                 try:
                     boot.changed(report)
-                    if self._debug:
+                    if logger.isEnabledFor(logging.DEBUG):
                         logger.debug("[bt] keyboard boot changed")
                 except Exception as e:
-                    if self._debug:
+                    if logger.isEnabledFor(logging.DEBUG):
                         logger.debug("[bt] keyboard boot changed error: %s", e)
 
     def notify_consumer(self, usage_id: int, pressed: bool) -> None:
@@ -193,22 +192,21 @@ class HIDTransportBLE:
         if cons is not None and hasattr(cons, "changed"):
             try:
                 cons.changed(payload)
-                if self._debug:
+                if logger.isEnabledFor(logging.DEBUG):
                     edge = "down" if pressed else "up"
                     logger.debug("[bt] consumer changed 0x%04X %s", usage_id, edge)
             except Exception as e:
-                if self._debug:
+                if logger.isEnabledFor(logging.DEBUG):
                     logger.debug("[bt] consumer changed error: %s", e)
 
 
 class BTLEController:
     """High-level BLE orchestrator with automatic recovery."""
 
-    def __init__(self, *, adapter: str, device_name: str, debug: bool = False) -> None:
-        self._tx = HIDTransportBLE(adapter=adapter, device_name=device_name, debug=debug)
-        self._client = HIDClient(hid=self._tx, debug=debug)
+    def __init__(self, *, adapter: str, device_name: str) -> None:
+        self._tx = HIDTransportBLE(adapter=adapter, device_name=device_name)
+        self._client = HIDClient(hid=self._tx)
         self._available = False
-        self._debug = debug
 
         self._stop_event = asyncio.Event()
         self._ready = asyncio.Event()
@@ -234,7 +232,7 @@ class BTLEController:
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=5.0)
         except asyncio.TimeoutError:
-            if self._debug:
+            if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("[bt] BLE controller still waiting for adapter")
 
     async def stop(self) -> None:
