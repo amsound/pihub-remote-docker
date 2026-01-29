@@ -36,7 +36,6 @@ class Dispatcher:
         self._cfg = cfg
         self._send_cmd = send_cmd
         self._bt = bt_le
-        self._debug_cmd = bool(getattr(cfg, "debug_cmd", False) or os.getenv("DEBUG_CMD") == "1")
         self._last_cmd_fail_log = 0.0
 
         # Load full keymap document, then split into parts we use
@@ -295,7 +294,7 @@ class Dispatcher:
         success = await self._send_cmd(text=text, **extras)
         if success:
             return
-        if not self._debug_cmd:
+        if not logger.isEnabledFor(logging.DEBUG):
             return
         now = time.monotonic()
         if now - self._last_cmd_fail_log < 5.0:

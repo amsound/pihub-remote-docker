@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import signal
+import sys
 
 try:
     import uvloop as _uvloop  # type: ignore
@@ -21,6 +23,18 @@ from .bt_le.controller import BTLEController
 from .macros import MACROS
 from .health import HealthServer
 
+
+def _debug_enabled() -> bool:
+    value = os.getenv("DEBUG", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+logging.basicConfig(
+    level=logging.DEBUG if _debug_enabled() else logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +114,7 @@ async def main() -> None:
         logger.error("[app] Cannot start without Home Assistant token: %s", exc)
         raise SystemExit(1) from exc
 
-    bt = BTLEController(adapter=cfg.ble_adapter, device_name=cfg.ble_device_name, debug=cfg.debug_bt)
+    bt = BTLEController(adapter=cfg.ble_adapter, device_name=cfg.ble_device_name)
 
     async def _on_activity(activity: str) -> None:
         await DispatcherRef.on_activity(activity)  # set below
@@ -152,8 +166,8 @@ async def main() -> None:
             task.result()
         except asyncio.CancelledError:
             return
-        except Exception as exc:  # pragma: no cover - defensive logging
-            logger.error("[app] Home Assistant task crashed: %r", exc)
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("[app] Home Assistant task crashed")
         else:
             logger.warning("[app] Home Assistant task exited unexpectedly")
         stop.set()

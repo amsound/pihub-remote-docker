@@ -1,7 +1,6 @@
 """Translate symbolic key names into HID payloads."""
 from __future__ import annotations
 
-import os
 import asyncio
 import json
 import logging
@@ -14,9 +13,8 @@ logger = logging.getLogger(__name__)
 
 class HIDClient:
     """Encode symbolic keys to HID payloads and forward to the transport."""
-    def __init__(self, *, hid, debug: bool = False) -> None:
+    def __init__(self, *, hid) -> None:
         self._hid = hid
-        self._debug = debug or (os.getenv("DEBUG_BT", "0").lower() in {"1","true","yes","on"})
         self._kb, self._cc = self._load_hid_tables()
 
     # ---------- edge-level API ----------
@@ -24,12 +22,12 @@ class HIDClient:
         """Send a logical key-down edge."""
         if usage == "keyboard":
             down = self._encode_keyboard_down(code)
-            if self._debug:
+            if logger.isEnabledFor(logging.DEBUG):
                 logger.debug('[bt] keyboard "%s" down', code)
             self._hid.notify_keyboard(down)
         elif usage == "consumer":
             usage_id = self._encode_consumer_usage(code)
-            if self._debug:
+            if logger.isEnabledFor(logging.DEBUG):
                 logger.debug('[bt] consumer "%s" down (0x%04X)', code, usage_id)
             if usage_id:
                 self._hid.notify_consumer(usage_id, True)
@@ -37,12 +35,12 @@ class HIDClient:
     def key_up(self, *, usage: Usage, code: str) -> None:
         """Send a logical key-up edge."""
         if usage == "keyboard":
-            if self._debug:
+            if logger.isEnabledFor(logging.DEBUG):
                 logger.debug('[bt] keyboard "%s" up', code)
             self._hid.notify_keyboard(b"\x00\x00\x00\x00\x00\x00\x00\x00")
         elif usage == "consumer":
             usage_id = self._encode_consumer_usage(code)
-            if self._debug:
+            if logger.isEnabledFor(logging.DEBUG):
                 logger.debug('[bt] consumer "%s" up (0x%04X)', code, usage_id)
             if usage_id:
                 self._hid.notify_consumer(usage_id, False)

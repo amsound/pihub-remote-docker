@@ -51,9 +51,7 @@ services:
       # HA_TOKEN_FILE: "/run/secrets/ha"                 # optional fallback
       # HA_WS_URL: "ws://127.0.0.1:8123/api/websocket"   # defaults to local
       # USB_RECEIVER: "/dev/input/eventX"                # optional override
-      # DEBUG_BT: 1                                      # optional for debug
-      # DEBUG_INPUT: 1                                   # optional for debug
-      # DEBUG_CMD: 1                                     # optional for debug
+      # DEBUG: 1                                         # optional for debug chatter
     volumes:
       - /dev/input:/dev/input:ro
       - /dev/input/by-id:/dev/input/by-id:ro
@@ -113,7 +111,7 @@ docker push a1exm/pihub:latest
 | `KEMAP_PATH`         | Optional local Keymap json                                    | Defaults to internal packaged      |
 | `HEALTH_HOST`        | Bind address for the HTTP health endpoint                     | `0.0.0.0`                          |
 | `HEALTH_PORT`        | Port for the HTTP health endpoint                             | `9123`                             |
-| `DEBUG_BT/INPUT/CMD` | Debug knobs                                                   | Default all off                    |
+| `DEBUG`              | Debug knob                                                    | Default off                        |
 
 **Fail-fast:** the app exits on startup if it can’t obtain an HA token from env or file, logging `"[app] Cannot start without Home Assistant token: ..."` to point operators at the missing credential.
 
@@ -221,4 +219,3 @@ Optionally include `"hold_ms": "40"` - values accected: `0, 40, 80, 100, 500, 20
 ## 🗺️ Roadmap
 
 * [ ] Web Interface to override global keymap & macro adjustment.
-
