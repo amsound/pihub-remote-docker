@@ -171,8 +171,10 @@ class HAWS:
                     if st.get("entity_id") == self._activity_entity:
                         val = str(st.get("state", "") or "").strip()
                         if val:
-                            logger.debug("[activity] %s", val)
-                            self._last_activity = val
+                            prior = self._last_activity
+                            if val != prior:
+                                logger.info("[activity] %s -> %s", prior, val)
+                                self._last_activity = val
                             res = self._on_activity(val)
                             if asyncio.iscoroutine(res):
                                 await res
@@ -234,7 +236,8 @@ class HAWS:
                             new_state = to_state.get("state")
                             if isinstance(new_state, str) and new_state:
                                 if new_state != self._last_activity:
-                                    logger.debug("[activity] %s", new_state)
+                                    prior = self._last_activity
+                                    logger.info("[activity] %s -> %s", prior, new_state)
                                     self._last_activity = new_state
                                 res = self._on_activity(new_state)
                                 if asyncio.iscoroutine(res):

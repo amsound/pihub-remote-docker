@@ -42,7 +42,7 @@ class HealthServer:
         app = web.Application()
         app.add_routes([web.get("/health", self._handle_health)])
 
-        self._runner = web.AppRunner(app)
+        self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, self._host, self._port)
         await self._site.start()
