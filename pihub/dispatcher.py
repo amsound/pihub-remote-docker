@@ -52,6 +52,7 @@ class Dispatcher:
             ) from e
 
         self._activity: Optional[str] = None
+        self._activity_none_logged = False
 
         # Active repeat tasks keyed by rem_* (per-key)
         self._repeat_tasks: Dict[str, asyncio.Task] = {}
@@ -73,14 +74,23 @@ class Dispatcher:
         return self._scancode_map
 
     # Activity comes from HA (ha_ws)
-    async def on_activity(self, text: str) -> None:
+    async def on_activity(self, text: Optional[str]) -> None:
         """Record the current activity reported by Home Assistant."""
+        prior = self._activity
         self._activity = text
+        if (prior is None) != (text is None):
+            self._activity_none_logged = False
 
     # USB edges come from UnifyingReader
     async def on_usb_edge(self, rem_key: str, edge: str) -> None:
         """Handle a key edge originating from the USB receiver."""
         loop = asyncio.get_running_loop()
+
+        if self._activity is None and not self._activity_none_logged:
+            logger.info(
+                "[dispatcher] activity not set yet; ignoring input until HA activity arrives"
+            )
+            self._activity_none_logged = True
 
         if edge == "down":
             # start timing window for this key
