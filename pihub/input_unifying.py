@@ -42,6 +42,7 @@ class UnifyingReader:
         edge_queue_maxsize: int = 512,
     ) -> None:
         self._device_path = (device_path or "").strip() or None
+        self._requested_path = self._device_path
         self._map = scancode_map
         self._on_edge = on_edge
         self._grab = grab
@@ -100,40 +101,75 @@ class UnifyingReader:
         return bool(t and not t.done())
 
     # ── Internals ───────────────────────────────────────────────────────────
+    def _resolve_device_path(self) -> Optional[str]:
+        path = self._device_path
+        if not (path and os.path.exists(path)):
+            path = _autodetect_or_none()
+            if path:
+                # lock in once found
+                self._device_path = path
+        return path
+
+    def _open_device(self, path: str) -> tuple[InputDevice, bool]:
+        dev = InputDevice(path)
+        grabbed = False
+        if self._grab:
+            try:
+                dev.grab()
+                grabbed = True
+            except Exception:
+                # continue without grab
+                pass
+        return dev, grabbed
+
     async def _run(self) -> None:
         backoff = 1.0  # seconds, exponential up to 10s
+        no_device_failures = 0
+        open_failures = 0
+        warn_every = 5
         while not self._stop.is_set():
-            # Resolve a device path each round
-            path = self._device_path
-            if not (path and os.path.exists(path)):
-                path = _autodetect_or_none()
-                if path:
-                    # lock in once found
-                    self._device_path = path
-    
+            path = self._resolve_device_path()
+            target_desc = (
+                f"device_path={self._requested_path}"
+                if self._requested_path
+                else "autodetect"
+            )
+
             if not path:
                 # device not present; wait and retry (jittered)
-                await asyncio.sleep(_jittered(backoff))
+                no_device_failures += 1
+                open_failures = 0
+                sleep_for = _jittered(backoff)
+                if no_device_failures == 1 or no_device_failures % warn_every == 0:
+                    logger.warning(
+                        "[usb] no device found (attempt %d, target=%s); retry in %.2fs",
+                        no_device_failures,
+                        target_desc,
+                        sleep_for,
+                    )
+                await asyncio.sleep(sleep_for)
                 backoff = min(backoff * 2, 10.0)
                 continue
+            no_device_failures = 0
     
             # Try to open the device
             try:
-                dev = InputDevice(path)
+                dev, grabbed = self._open_device(path)
             except Exception:
-                await asyncio.sleep(_jittered(backoff))
+                open_failures += 1
+                sleep_for = _jittered(backoff)
+                if open_failures == 1 or open_failures % warn_every == 0:
+                    logger.warning(
+                        "[usb] open failed (attempt %d, target=%s, path=%s); retry in %.2fs",
+                        open_failures,
+                        target_desc,
+                        path,
+                        sleep_for,
+                    )
+                await asyncio.sleep(sleep_for)
                 backoff = min(backoff * 2, 10.0)
                 continue
-    
-            # Optional exclusive grab; never fatal
-            grabbed = False
-            if self._grab:
-                try:
-                    dev.grab()
-                    grabbed = True
-                except Exception:
-                    # continue without grab
-                    pass
+            open_failures = 0
     
             logger.info("[usb] open %s grabbed=%s", path, str(grabbed).lower())
     
@@ -193,7 +229,7 @@ class UnifyingReader:
             except (OSError, IOError) as e:
                 err = getattr(e, "errno", None)
                 if err in (19, 5):  # ENODEV/EIO
-                    await asyncio.sleep(backoff)
+                    await asyncio.sleep(_jittered(backoff))
                     backoff = min(backoff * 2, 10.0)
                 else:
                     await asyncio.sleep(1.0)
