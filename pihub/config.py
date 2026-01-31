@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 
 def _getenv_bool(name: str, default: bool = False) -> bool:
@@ -22,7 +21,6 @@ class Config:
     ha_activity: str
     ha_cmd_event: str
 
-    usb_receiver: Optional[str]
     usb_grab: bool
 
     ble_adapter: str
@@ -40,7 +38,6 @@ class Config:
         ha_activity   = os.getenv("HA_ACTIVITY", "input_select.activity")
         ha_cmd_event  = os.getenv("HA_CMD_EVENT", "pihub.cmd")
 
-        usb_receiver  = (os.getenv("USB_RECEIVER") or "").strip() or None
         usb_grab      = _getenv_bool("USB_GRAB", True)
 
         ble_adapter      = os.getenv("BLE_ADAPTER", "hci0")
@@ -57,7 +54,6 @@ class Config:
             ha_token_file=ha_token_file,
             ha_activity=ha_activity,
             ha_cmd_event=ha_cmd_event,
-            usb_receiver=usb_receiver,
             usb_grab=usb_grab,
             ble_adapter=ble_adapter,
             ble_device_name=ble_device_name,

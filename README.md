@@ -50,7 +50,6 @@ services:
       HA_TOKEN: "###############"                        # This ENV takes precedence
       # HA_TOKEN_FILE: "/run/secrets/ha"                 # optional fallback
       # HA_WS_URL: "ws://127.0.0.1:8123/api/websocket"   # defaults to local
-      # USB_RECEIVER: "/dev/input/eventX"                # optional override
       # DEBUG: 1                                         # optional for debug chatter
     volumes:
       - /dev/input:/dev/input:ro
@@ -107,7 +106,6 @@ docker push a1exm/pihub:latest
 | `HA_TOKEN`           | HA Long-Lived Access Token                                    | ENV takes priority                 |
 | `HA_TOKEN_FILE`      | Path to a file containing the HA token                        | Fallback if `HA_TOKEN` not set     |
 | `HA_WS_URL`          | Home Assistant WebSocket URL                                  | Defaults to localhost              |
-| `USB_RECEIVER`       | Optional explicit evdev device (e.g., `/dev/input/event2`)    | Auto-picks first *Unifying* device |
 | `HEALTH_HOST`        | Bind address for the HTTP health endpoint                     | `0.0.0.0`                          |
 | `HEALTH_PORT`        | Port for the HTTP health endpoint                             | `9123`                             |
 | `DEBUG`              | Debug knob                                                    | Default off                        |

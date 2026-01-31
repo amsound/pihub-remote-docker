@@ -6,7 +6,6 @@ from pihub.input_unifying import UnifyingReader
 def test_unifying_reader_drops_when_queue_full() -> None:
     async def _exercise() -> UnifyingReader:
         reader = UnifyingReader(
-            device_path=None,
             scancode_map={},
             on_edge=lambda *_: None,
             edge_queue_maxsize=1,
