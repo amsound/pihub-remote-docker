@@ -322,12 +322,12 @@ class UnifyingReader:
 
 
 def _autodetect_or_none() -> Optional[str]:
-    """Best-effort find a keyboard-like event device via by-id; return None if absent."""
-    cand = sorted(glob.glob("/dev/input/by-id/*Unifying*event-kbd")) or sorted(
-        glob.glob("/dev/input/by-id/*event-kbd")
+    """Best-effort find a keyboard-like event device via by-id/by-path; return None if absent."""
+    cand = (
+        sorted(glob.glob("/dev/input/by-id/*Logitech*USB_Receiver*event-kbd"))
+        or sorted(glob.glob("/dev/input/by-id/*event-kbd"))
+        or sorted(glob.glob("/dev/input/by-path/*event-kbd"))
     )
-    if not cand:
-        cand = sorted(glob.glob("/dev/input/by-path/*event-kbd"))
     return cand[0] if cand else None
 
 
