@@ -28,8 +28,6 @@ class Config:
     ble_adapter: str
     ble_device_name: str
 
-    keymap_path: Optional[str]
-
     health_host: str
     health_port: int
 
@@ -48,8 +46,6 @@ class Config:
         ble_adapter      = os.getenv("BLE_ADAPTER", "hci0")
         ble_device_name  = os.getenv("BLE_DEVICE_NAME", "PiHub Remote")
 
-        keymap_path   = (os.getenv("KEYMAP_PATH") or "").strip() or None
-
         health_host   = os.getenv("HEALTH_HOST", "0.0.0.0")
         try:
             health_port = int(os.getenv("HEALTH_PORT", "9123"))
@@ -65,7 +61,6 @@ class Config:
             usb_grab=usb_grab,
             ble_adapter=ble_adapter,
             ble_device_name=ble_device_name,
-            keymap_path=keymap_path,
             health_host=health_host,
             health_port=health_port,
         )

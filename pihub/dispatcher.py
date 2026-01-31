@@ -7,9 +7,13 @@ import json
 import logging
 import os
 import time
-from pathlib import Path
 from contextlib import suppress
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+
+try:
+    from importlib import resources as importlib_resources
+except ImportError:  # pragma: no cover - fallback for older Python
+    import importlib_resources
 
 # Global repeat knobs (WS only; BLE never repeats)
 REPEAT_INITIAL_MS = int(os.getenv("REPEAT_INITIAL_MS", "400"))
@@ -264,41 +268,28 @@ class Dispatcher:
     def _load_keymap(self) -> dict:
         """
         Load remote key bindings.
-
-        Order:
-          1) cfg.keymap_path (self._cfg)
-          2) KEYMAP_PATH env
-          3) packaged default: /app/pihub/assets/keymap.json
-             (with a module-relative assets fallback for dev runs)
         """
-        cfg_path = getattr(self._cfg, "keymap_path", None)
-        env_path = (os.getenv("KEYMAP_PATH") or "").strip()
+        identifier = "pihub.assets:keymap.json"
+        logger.info("[dispatcher] Loading keymap from packaged assets: %s", identifier)
+        try:
+            resource = importlib_resources.files("pihub.assets") / "keymap.json"
+            raw = resource.read_text(encoding="utf-8")
+        except (FileNotFoundError, ModuleNotFoundError, OSError) as exc:
+            raise FileNotFoundError(
+                f"Packaged keymap missing or unreadable: {identifier}"
+            ) from exc
 
-        candidates: List[Path] = []
-        if cfg_path:
-            candidates.append(Path(cfg_path).expanduser())
-        if env_path:
-            candidates.append(Path(env_path).expanduser())
-        # Packaged default (absolute path used in the container)
-        candidates.append(Path("/app/pihub/assets/keymap.json"))
-        # Module-relative fallback (useful when running from source)
-        candidates.append(Path(__file__).resolve().parent.parent / "assets" / "keymap.json")
+        try:
+            doc = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Packaged keymap invalid JSON ({identifier}): {exc}") from exc
 
-        for p in candidates:
-            if p.is_file():
-                doc = json.loads(p.read_text(encoding="utf-8"))
-                if not isinstance(doc, dict) or "scancode_map" not in doc or "activities" not in doc:
-                    raise ValueError(
-                        f"keymap.json at {p} missing required keys: 'scancode_map' and 'activities'"
-                    )
-                return doc
+        if not isinstance(doc, dict) or "scancode_map" not in doc or "activities" not in doc:
+            raise ValueError(
+                f"Packaged keymap schema invalid ({identifier}): expected 'scancode_map' and 'activities'."
+            )
 
-        tried = "\n  - " + "\n  - ".join(str(p) for p in candidates)
-        raise FileNotFoundError(
-            "keymap.json not found in any of the expected locations:" + tried +
-            "\nSet KEYMAP_PATH or cfg.keymap_path to an absolute file path, "
-            "or bake /app/pihub/assets/keymap.json into the image."
-        )
+        return doc
 
     async def _send_with_log(self, text: str, **extras: Any) -> None:
         success = await self._send_cmd(text=text, **extras)

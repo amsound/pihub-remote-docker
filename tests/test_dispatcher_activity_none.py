@@ -4,8 +4,7 @@ from pihub.dispatcher import Dispatcher
 
 
 class _Cfg:
-    def __init__(self, keymap_path: str) -> None:
-        self.keymap_path = keymap_path
+    pass
 
 
 class _BT:
@@ -16,26 +15,11 @@ class _BT:
         return None
 
 
-def test_activity_none_logs_once(tmp_path, caplog) -> None:
-    keymap = tmp_path / "keymap.json"
-    keymap.write_text(
-        """
-        {
-          "scancode_map": {"KEY_ENTER": "rem_ok"},
-          "activities": {
-            "watch": {
-              "rem_ok": [{ "do": "emit", "text": "ok" }]
-            }
-          }
-        }
-        """,
-        encoding="utf-8",
-    )
-
+def test_activity_none_logs_once(caplog) -> None:
     async def _send_cmd(**_kwargs) -> bool:
         return True
 
-    dispatcher = Dispatcher(cfg=_Cfg(str(keymap)), send_cmd=_send_cmd, bt_le=_BT())
+    dispatcher = Dispatcher(cfg=_Cfg(), send_cmd=_send_cmd, bt_le=_BT())
 
     caplog.set_level(logging.INFO, logger="pihub.dispatcher")
 

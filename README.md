@@ -108,10 +108,11 @@ docker push a1exm/pihub:latest
 | `HA_TOKEN_FILE`      | Path to a file containing the HA token                        | Fallback if `HA_TOKEN` not set     |
 | `HA_WS_URL`          | Home Assistant WebSocket URL                                  | Defaults to localhost              |
 | `USB_RECEIVER`       | Optional explicit evdev device (e.g., `/dev/input/event2`)    | Auto-picks first *Unifying* device |
-| `KEMAP_PATH`         | Optional local Keymap json                                    | Defaults to internal packaged      |
 | `HEALTH_HOST`        | Bind address for the HTTP health endpoint                     | `0.0.0.0`                          |
 | `HEALTH_PORT`        | Port for the HTTP health endpoint                             | `9123`                             |
 | `DEBUG`              | Debug knob                                                    | Default off                        |
+
+Keymap is bundled with the application and loaded from packaged assets in production; it is not configurable at runtime.
 
 **Fail-fast:** the app exits on startup if it can’t obtain an HA token from env or file, logging `"[app] Cannot start without Home Assistant token: ..."` to point operators at the missing credential.
 
