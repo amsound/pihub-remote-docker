@@ -22,6 +22,8 @@ class HIDClient:
         """Send a logical key-down edge."""
         if usage == "keyboard":
             down = self._encode_keyboard_down(code)
+            if down is None:
+                return
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug('[bt] keyboard "%s" down', code)
             self._hid.notify_keyboard(down)
@@ -35,6 +37,9 @@ class HIDClient:
     def key_up(self, *, usage: Usage, code: str) -> None:
         """Send a logical key-up edge."""
         if usage == "keyboard":
+            if code not in self._kb:
+                logger.warning('[bt] unknown keyboard code "%s" up; ignoring', code)
+                return
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug('[bt] keyboard "%s" up', code)
             self._hid.notify_keyboard(b"\x00\x00\x00\x00\x00\x00\x00\x00")
@@ -95,10 +100,11 @@ class HIDClient:
         cc = {k: int(v) for k, v in (data.get("consumer") or {}).items()}
         return kb, cc
 
-    def _encode_keyboard_down(self, code: str) -> bytes:
+    def _encode_keyboard_down(self, code: str) -> Optional[bytes]:
         hid = self._kb.get(code)
         if hid is None:
-            return b"\x00\x00\x00\x00\x00\x00\x00\x00"
+            logger.warning('[bt] unknown keyboard code "%s" down; ignoring', code)
+            return None
         # Boot Keyboard 8-byte: mods(1), reserved(1), key1..key6
         return bytes([0x00, 0x00, hid, 0x00, 0x00, 0x00, 0x00, 0x00])
 
