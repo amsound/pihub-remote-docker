@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from contextlib import suppress
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -16,8 +15,8 @@ except ImportError:  # pragma: no cover - fallback for older Python
     import importlib_resources
 
 # Global repeat knobs (WS only; BLE never repeats)
-REPEAT_INITIAL_MS = int(os.getenv("REPEAT_INITIAL_MS", "400"))
-REPEAT_RATE_MS    = int(os.getenv("REPEAT_RATE_MS", "400"))
+REPEAT_INITIAL_MS = 400
+REPEAT_RATE_MS = 400
 
 EdgeCB = Callable[[str, str], Awaitable[None]] | Callable[[str, str], None]
 
