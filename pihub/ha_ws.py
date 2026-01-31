@@ -16,6 +16,9 @@ OnCmd      = Callable[[dict], Awaitable[None]] | Callable[[dict], None]
 
 logger = logging.getLogger(__name__)
 
+WS_RECV_TIMEOUT_S = 20.0
+RECONNECT_JITTER = 0.2
+
 
 class HAWS:
     """
@@ -76,7 +79,7 @@ class HAWS:
             except Exception as exc:
                 if not self._stopping.is_set():
                     logger.warning("[ws] error: %r", exc)
-                jitter = random.uniform(0.75, 1.25)
+                jitter = random.uniform(1.0 - RECONNECT_JITTER, 1.0 + RECONNECT_JITTER)
                 timeout = min(60.0, delay) * jitter
                 try:
                     await asyncio.wait_for(self._stopping.wait(), timeout=timeout)
@@ -125,6 +128,8 @@ class HAWS:
         self._ws = ws
         try:
             await self._auth(ws)
+            if self._stopping.is_set():
+                return
 
             logger.info("[ws] connected")  # log *before* seed so order is consistent
 
@@ -136,6 +141,8 @@ class HAWS:
 
             # Seed activity from current states once.
             await self._seed_activity(ws)
+            if self._stopping.is_set():
+                return
 
             # Receive until closed.
             await self._recv_loop(ws)
@@ -145,14 +152,22 @@ class HAWS:
             await self._close_ws()
 
     async def _auth(self, ws: aiohttp.ClientWebSocketResponse) -> None:
-        msg = await ws.receive_json()
+        try:
+            msg = await asyncio.wait_for(ws.receive_json(), timeout=WS_RECV_TIMEOUT_S)
+        except asyncio.TimeoutError as exc:
+            logger.warning("[ws] auth timeout waiting for handshake (timeout=%.1fs)", WS_RECV_TIMEOUT_S)
+            raise exc
         mtype = msg.get("type")
         if mtype == "auth_ok":
             return
         if mtype != "auth_required":
             raise RuntimeError(f"unexpected handshake: {mtype}")
         await ws.send_json({"type": "auth", "access_token": self._token})
-        msg = await ws.receive_json()
+        try:
+            msg = await asyncio.wait_for(ws.receive_json(), timeout=WS_RECV_TIMEOUT_S)
+        except asyncio.TimeoutError as exc:
+            logger.warning("[ws] auth timeout waiting for auth_ok (timeout=%.1fs)", WS_RECV_TIMEOUT_S)
+            raise exc
         if msg.get("type") != "auth_ok":
             raise RuntimeError(f"auth failed: {msg}")
 
@@ -164,7 +179,13 @@ class HAWS:
         req_id = self._next_id()
         await ws.send_json({"id": req_id, "type": "get_states"})
         while True:
-            msg = await ws.receive_json()
+            if self._stopping.is_set():
+                return
+            try:
+                msg = await asyncio.wait_for(ws.receive_json(), timeout=WS_RECV_TIMEOUT_S)
+            except asyncio.TimeoutError as exc:
+                logger.warning("[ws] seed timeout waiting for get_states (timeout=%.1fs)", WS_RECV_TIMEOUT_S)
+                raise exc
             if msg.get("type") == "result" and msg.get("id") == req_id and msg.get("success"):
                 states = msg.get("result") or []
                 for st in states:
