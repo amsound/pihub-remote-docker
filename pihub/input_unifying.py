@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 
 def _jittered(t: float) -> float:
     """±25% jitter, capped to 10s."""
-    return min(10.0, t) * (0.75 + random.random() * 0.5)
+    jittered = t * (0.75 + random.random() * 0.5)
+    return min(10.0, jittered)
 
 class UnifyingReader:
     """
@@ -34,15 +35,12 @@ class UnifyingReader:
 
     def __init__(
         self,
-        device_path: Optional[str],
         scancode_map: Dict[str, str],
         on_edge: EdgeCallback,
         *,
         grab: bool = True,
         edge_queue_maxsize: int = 512,
     ) -> None:
-        self._device_path = (device_path or "").strip() or None
-        self._requested_path = self._device_path
         self._map = scancode_map
         self._on_edge = on_edge
         self._grab = grab
@@ -86,9 +84,6 @@ class UnifyingReader:
 
     @property
     def device_path(self) -> str:
-        # Report the last known/selected path (may be None before first open)
-        if self._device_path:
-            return self._device_path
         # best-effort autodetect for display
         path = _autodetect_or_none()
         return path or "<auto>"
@@ -102,13 +97,7 @@ class UnifyingReader:
 
     # ── Internals ───────────────────────────────────────────────────────────
     def _resolve_device_path(self) -> Optional[str]:
-        path = self._device_path
-        if not (path and os.path.exists(path)):
-            path = _autodetect_or_none()
-            if path:
-                # lock in once found
-                self._device_path = path
-        return path
+        return _autodetect_or_none()
 
     def _open_device(self, path: str) -> tuple[InputDevice, bool]:
         dev = InputDevice(path)
@@ -126,32 +115,49 @@ class UnifyingReader:
         backoff = 1.0  # seconds, exponential up to 10s
         no_device_failures = 0
         open_failures = 0
+        wait_state: Optional[str] = None
+        last_wait_log = 0.0
         warn_every = 5
         while not self._stop.is_set():
             path = self._resolve_device_path()
-            target_desc = (
-                f"device_path={self._requested_path}"
-                if self._requested_path
-                else "autodetect"
-            )
-
             if not path:
                 # device not present; wait and retry (jittered)
                 no_device_failures += 1
                 open_failures = 0
                 sleep_for = _jittered(backoff)
-                if no_device_failures == 1 or no_device_failures % warn_every == 0:
+                now = time.monotonic()
+                receiver_present = _unifying_receiver_present()
+                next_state = "present_no_input" if receiver_present else "absent"
+                log_msg = (
+                    "[usb] receiver present; waiting for paired device "
+                    "(attempt %d); retry in %.2fs"
+                    if receiver_present
+                    else "[usb] receiver not detected "
+                    "(attempt %d); retry in %.2fs"
+                )
+                if wait_state != next_state:
+                    wait_state = next_state
+                    last_wait_log = now
                     logger.warning(
-                        "[usb] no device found (attempt %d, target=%s); retry in %.2fs",
+                        log_msg,
                         no_device_failures,
-                        target_desc,
+                        sleep_for,
+                    )
+                elif (
+                    no_device_failures == 1
+                    or no_device_failures % warn_every == 0
+                    or (now - last_wait_log) >= 60.0
+                ):
+                    last_wait_log = now
+                    logger.warning(
+                        log_msg,
+                        no_device_failures,
                         sleep_for,
                     )
                 await asyncio.sleep(sleep_for)
                 backoff = min(backoff * 2, 10.0)
                 continue
             no_device_failures = 0
-    
             # Try to open the device
             try:
                 dev, grabbed = self._open_device(path)
@@ -160,9 +166,8 @@ class UnifyingReader:
                 sleep_for = _jittered(backoff)
                 if open_failures == 1 or open_failures % warn_every == 0:
                     logger.warning(
-                        "[usb] open failed (attempt %d, target=%s, path=%s); retry in %.2fs",
+                        "[usb] open failed (attempt %d, path=%s); retry in %.2fs",
                         open_failures,
-                        target_desc,
                         path,
                         sleep_for,
                     )
@@ -171,7 +176,9 @@ class UnifyingReader:
                 continue
             open_failures = 0
     
-            logger.info("[usb] open %s grabbed=%s", path, str(grabbed).lower())
+            if wait_state != "ready":
+                wait_state = "ready"
+                logger.info("[usb] input device opened: %s grabbed=%s", path, str(grabbed).lower())
     
             # We have an open device; reset backoff
             backoff = 1.0
@@ -232,7 +239,7 @@ class UnifyingReader:
                     await asyncio.sleep(_jittered(backoff))
                     backoff = min(backoff * 2, 10.0)
                 else:
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(_jittered(1.0))
 
             except asyncio.CancelledError:
                 # Shutting down
@@ -240,7 +247,7 @@ class UnifyingReader:
 
             except Exception as exc:
                 logger.warning("[usb] reader error: %r", exc)
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(_jittered(1.0))
 
             finally:
                 with contextlib.suppress(Exception):
@@ -319,7 +326,26 @@ def _autodetect_or_none() -> Optional[str]:
     cand = sorted(glob.glob("/dev/input/by-id/*Unifying*event-kbd")) or sorted(
         glob.glob("/dev/input/by-id/*event-kbd")
     )
+    if not cand:
+        cand = sorted(glob.glob("/dev/input/by-path/*event-kbd"))
     return cand[0] if cand else None
+
+
+def _unifying_receiver_present() -> bool:
+    """Return True if a Logitech Unifying receiver is present via sysfs."""
+    for dev_path in glob.glob("/sys/bus/usb/devices/*"):
+        vendor_path = os.path.join(dev_path, "idVendor")
+        product_path = os.path.join(dev_path, "idProduct")
+        try:
+            with open(vendor_path, "r", encoding="utf-8") as vendor_file:
+                vendor = vendor_file.read().strip().lower()
+            with open(product_path, "r", encoding="utf-8") as product_file:
+                product = product_file.read().strip().lower()
+        except OSError:
+            continue
+        if vendor == "046d" and product == "c52b":
+            return True
+    return False
 
 
 def _key_name_from_code(code: int) -> Optional[str]:

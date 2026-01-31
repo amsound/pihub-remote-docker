@@ -136,7 +136,6 @@ async def main() -> None:
     DispatcherRef = Dispatcher(cfg=cfg, send_cmd=_send_cmd, bt_le=bt)
 
     reader = UnifyingReader(
-        device_path=cfg.usb_receiver,
         scancode_map=DispatcherRef.scancode_map,
         on_edge=DispatcherRef.on_usb_edge,
         grab=cfg.usb_grab,
