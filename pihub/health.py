@@ -88,7 +88,9 @@ class HealthServer:
             degraded_reasons.append("usb.not_grabbed")
         if not ble_state["adapter_present"]:
             degraded_reasons.append("ble.adapter_missing")
-        if not ble_state["advertising"]:
+        # BLE is considered healthy if we are either connected OR advertising (ready to connect).
+        # Advertising may intentionally stop once connected.
+        if not ble_state["connected"] and not ble_state["advertising"]:
             degraded_reasons.append("ble.not_advertising")
         if not ble_state["connected"]:
             degraded_reasons.append("ble.not_connected")
