@@ -13,7 +13,7 @@ import aiohttp
 
 from .validation import DEFAULT_MS_WHITELIST, parse_ms_whitelist
 
-OnActivity = Callable[[str], Awaitable[None]] | Callable[[str], None]
+OnActivity = Callable[[Optional[str]], Awaitable[None]] | Callable[[Optional[str]], None]
 OnCmd      = Callable[[dict], Awaitable[None]] | Callable[[dict], None]
 
 logger = logging.getLogger(__name__)
@@ -190,35 +190,37 @@ class HAWS:
                 raise exc
             if msg.get("type") == "result" and msg.get("id") == req_id and msg.get("success"):
                 states = msg.get("result") or []
+                found = False
                 for st in states:
                     if st.get("entity_id") == self._activity_entity:
-                        val = str(st.get("state", "") or "").strip()
-                        if val:
-                            prior = self._last_activity
-                            if val != prior:
-                                logger.info("[activity] %s -> %s", prior, val)
-                                self._last_activity = val
-                            res = self._on_activity(val)
-                            if asyncio.iscoroutine(res):
-                                await res
+                        found = True
+                        val = self._normalize_activity_state(st.get("state"))
+                        await self._apply_activity(val)
+                        break
+                if not found:
+                    await self._apply_activity(None)
                 return
             # ignore interleaved messages until our result arrives
 
     async def _subscribe(self, ws: aiohttp.ClientWebSocketResponse, event_type: str) -> None:
-        await ws.send_json({"id": self._next_id(), "type": "subscribe_events", "event_type": event_type})
+        req_id = self._next_id()
+        await ws.send_json({"id": req_id, "type": "subscribe_events", "event_type": event_type})
+        await self._await_result(ws, req_id, context=f"subscribe_events:{event_type}")
 
     async def _subscribe_trigger_entity(self, ws: aiohttp.ClientWebSocketResponse, entity_id: str) -> None:
         """
         Server-side filter: only deliver state changes for this entity.
         """
+        req_id = self._next_id()
         await ws.send_json({
-            "id": self._next_id(),
+            "id": req_id,
             "type": "subscribe_trigger",
             "trigger": {
                 "platform": "state",
                 "entity_id": entity_id,
             },
         })
+        await self._await_result(ws, req_id, context=f"subscribe_trigger:{entity_id}")
         # Note: HA replies with a result, then sends trigger matches as events with
         # event.variables.trigger.{from_state,to_state}. (Docs show 'type: event' payload.)  # noqa: E501
 
@@ -253,18 +255,11 @@ class HAWS:
                     # 1) Triggered state change for our one entity (subscribe_trigger).
                     #    No need to re-check entity_id, but do it defensively.
                     from_state, to_state = self._extract_trigger_states(ev)
-                    if to_state:
+                    if to_state is not None:
                         ent = to_state.get("entity_id") or (from_state or {}).get("entity_id")
                         if not ent or ent == self._activity_entity:
-                            new_state = to_state.get("state")
-                            if isinstance(new_state, str) and new_state:
-                                if new_state != self._last_activity:
-                                    prior = self._last_activity
-                                    logger.info("[activity] %s -> %s", prior, new_state)
-                                    self._last_activity = new_state
-                                res = self._on_activity(new_state)
-                                if asyncio.iscoroutine(res):
-                                    await res
+                            new_state = self._normalize_activity_state(to_state.get("state"))
+                            await self._apply_activity(new_state)
                             continue  # already handled
 
                     # 2) Your custom command events (unchanged).
@@ -300,6 +295,51 @@ class HAWS:
         i = self._msg_id
         self._msg_id += 1
         return i
+
+    def _normalize_activity_state(self, state: Any) -> Optional[str]:
+        if state is None:
+            return None
+        text = state if isinstance(state, str) else str(state)
+        val = text.strip()
+        if not val or val in {"unknown", "unavailable"}:
+            return None
+        return val
+
+    async def _apply_activity(self, new_state: Optional[str]) -> None:
+        should_notify = new_state != self._last_activity or new_state is None
+        if new_state != self._last_activity:
+            prior = self._last_activity
+            logger.info("[activity] %s -> %s", prior, new_state)
+            self._last_activity = new_state
+        if should_notify:
+            res = self._on_activity(new_state)
+            if asyncio.iscoroutine(res):
+                await res
+
+    async def _await_result(
+        self,
+        ws: aiohttp.ClientWebSocketResponse,
+        req_id: int,
+        *,
+        context: str,
+    ) -> None:
+        while True:
+            if self._stopping.is_set():
+                return
+            try:
+                msg = await asyncio.wait_for(ws.receive_json(), timeout=WS_RECV_TIMEOUT_S)
+            except asyncio.TimeoutError as exc:
+                logger.warning(
+                    "[ws] timeout waiting for %s result (timeout=%.1fs)",
+                    context,
+                    WS_RECV_TIMEOUT_S,
+                )
+                raise exc
+            if msg.get("type") == "result" and msg.get("id") == req_id:
+                if msg.get("success"):
+                    return
+                logger.error("[ws] %s failed: %s", context, msg)
+                raise RuntimeError(f"{context} failed: {msg}")
 
     async def _close_ws(self) -> None:
         ws, self._ws = self._ws, None
