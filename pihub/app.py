@@ -103,7 +103,7 @@ async def main() -> None:
 
     bt = BTLEController(adapter=cfg.ble_adapter, device_name=cfg.ble_device_name)
 
-    async def _on_activity(activity: str) -> None:
+    async def _on_activity(activity: str | None) -> None:
         await DispatcherRef.on_activity(activity)  # set below
 
     _on_cmd = _make_on_cmd(bt)
