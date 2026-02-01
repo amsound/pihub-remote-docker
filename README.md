@@ -104,11 +104,11 @@ docker push a1exm/pihub:latest
 | Variable             | Description                                                   | Default / Notes                    |
 | -------------------- | ------------------------------------------------------------- | ---------------------------------- |
 | `HA_TOKEN`           | HA Long-Lived Access Token                                    | ENV takes priority                 |
-| `HA_TOKEN_FILE`      | Path to a file containing the HA token                        | Fallback if `HA_TOKEN` not set     |
-| `HA_WS_URL`          | Home Assistant WebSocket URL                                  | Defaults to localhost              |
-| `HEALTH_HOST`        | Bind address for the HTTP health endpoint                     | `0.0.0.0`                          |
-| `HEALTH_PORT`        | Port for the HTTP health endpoint                             | `9123`                             |
-| `DEBUG`              | Debug knob                                                    | Default off                        |
+| `HA_TOKEN_FILE`      | Path to a file containing the HA Long-Lived Access Token      | Fallback if `HA_TOKEN` not set     |
+| `HA_WS_URL`          | Home Assistant WebSocket URL                                  | Defaults to `127.0.0.1`            |
+| `HEALTH_HOST`        | Bind address for the HTTP health endpoint                     | Defaults to `0.0.0.0`              |
+| `HEALTH_PORT`        | Port for the HTTP health endpoint                             | Defaults to `9123`                 |
+| `DEBUG`              | Debug knob                                                    | Defaults to INFO/WARN              |
 
 Keymap is bundled with the application and loaded from packaged assets in production; it is not configurable at runtime.
 
@@ -116,9 +116,9 @@ Keymap is bundled with the application and loaded from packaged assets in produc
 
 ---
 
-## 🌡️ NEW! Health endpoint
+## 🌡️ Health endpoint
 
-A tiny HTTP endpoint publishes a JSON snapshot at `http://<host>:9123/health`:
+An HTTP endpoint publishes a JSON snapshot at `http://<host>:9123/health`:
 
 ```json
 {
@@ -126,20 +126,25 @@ A tiny HTTP endpoint publishes a JSON snapshot at `http://<host>:9123/health`:
   "degraded_reasons": [],
   "ws": {
     "connected": true,
-    "last_activity": "watch"          // from Home Assistant
+    "last_activity": "watch"
   },
   "usb": {
-    "reader": "running",              // USB loop active
-    "device": "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-kbd",
-    "paired": true
+    "receiver_present": true,
+    "paired_remote": true,
+    "reader_running": true,
+    "input_open": true,
+    "input_path": "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-kbd",
+    "grabbed": true
   },
   "ble": {
-    "available": true                 // advertising + HID ready
+    "adapter_present": true,
+    "advertising": false,
+    "connected": true
   }
 }
 ```
 
-This can be polled from Home Assistant via a REST sensor or used by container orchestrators for liveness checks. A degraded status can indicate the HA websocket is unavailable, the USB reader is unhealthy, or BLE/USB pairing state is not ready.
+This can be polled from Home Assistant via a REST sensor. A degraded status can indicate the HA websocket is unavailable, the USB reader is unhealthy, or BLE/USB pairing state is not ready. A reason is provided.
 
 ---
 
@@ -192,7 +197,7 @@ Optionally include `"hold_ms": "40"` - values accepted: `0, 40, 80, 100, 500, 20
 
   * `emit` → sends WebSocket `{"dest":"ha","text":...}`
   * `ble` → sends BLE Consumer/Keyboard usage
-  * Optional `min_hold_ms`
+  * Optional `min_hold_ms` "Long Press" - hold for 'X' ms then trigger
   * Optional `repeat` (synthetic; **HA only**)
 
 ---
@@ -219,9 +224,3 @@ Optionally include `"hold_ms": "40"` - values accepted: `0, 40, 80, 100, 500, 20
 
 * Built with `aiohttp` (one session, WS pings/clean reconnect)
 * Multi-stage Dockerfile for minimal runtime image: `Dockerfile`
-
----
-
-## 🗺️ Roadmap
-
-* [ ] Web Interface to override global keymap & macro adjustment.
