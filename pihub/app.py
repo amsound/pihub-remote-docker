@@ -22,6 +22,7 @@ from .input_unifying import UnifyingReader
 from .bt_le.controller import BTLEController
 from .macros import MACROS
 from .health import HealthServer
+from .validation import DEFAULT_MS_WHITELIST, parse_ms_whitelist
 
 
 def _debug_enabled() -> bool:
@@ -39,19 +40,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _parse_ms(value: object, *, field: str, default: int | None = None) -> tuple[int | None, bool]:
-    """Try to coerce a value to milliseconds, logging if conversion fails."""
-    if value is None:
-        return default, True
-
-    try:
-        return int(value), True
-    except (TypeError, ValueError):
-        result = default
-        logger.debug("Dropping command due to invalid %s=%r", field, value)
-        return result, False
-
-
 def _make_on_cmd(bt: BTLEController):
     async def _on_cmd(data: dict) -> None:
         """
@@ -62,15 +50,15 @@ def _make_on_cmd(bt: BTLEController):
                "text": "ble_key",
                "usage": "keyboard" | "consumer",
                "code": "<symbolic_code>",
-               "hold_ms": 40               # optional, default 40ms
+               "hold_ms": 40               # optional, default 40ms (whitelist)
              }
 
           2) Macro by name (timed sequence, local to Pi):
              {
                "text": "macro",
                "name": "<macro_name>",     # must exist in MACROS
-               "tap_ms": 40,               # optional per-key hold, default 40ms
-               "inter_delay_ms": 400       # optional gap, default 400ms
+               "tap_ms": 40,               # optional per-key hold, default 40ms (whitelist)
+               "inter_delay_ms": 400       # optional gap, default 400ms (whitelist)
              }
         """
         text = (data or {}).get("text")
@@ -78,9 +66,7 @@ def _make_on_cmd(bt: BTLEController):
         if text == "ble_key":
             usage = data.get("usage")
             code = data.get("code")
-            hold_ms, ok = _parse_ms(data.get("hold_ms"), field="hold_ms", default=40)
-            if not ok:
-                return
+            hold_ms = parse_ms_whitelist(data.get("hold_ms"), default=40, context="cmd.hold_ms")
             if isinstance(usage, str) and isinstance(code, str) and hold_ms is not None:
                 # single-shot via HIDClient (macros use run_macro below)
                 await bt.send_key(usage=usage, code=code, hold_ms=hold_ms)
@@ -90,12 +76,13 @@ def _make_on_cmd(bt: BTLEController):
             name = str(data.get("name") or "")
             steps = MACROS.get(name, [])
             if steps:
-                tap, ok_tap = _parse_ms(data.get("tap_ms"), field="tap_ms", default=40)
-                inter, ok_inter = _parse_ms(
-                    data.get("inter_delay_ms"), field="inter_delay_ms", default=400
+                tap = parse_ms_whitelist(data.get("tap_ms"), default=40, context="cmd.tap_ms")
+                inter = parse_ms_whitelist(
+                    data.get("inter_delay_ms"),
+                    allowed=(*DEFAULT_MS_WHITELIST, 400),
+                    default=400,
+                    context="cmd.inter_delay_ms",
                 )
-                if not (ok_tap and ok_inter) or tap is None or inter is None:
-                    return
                 await bt.run_macro(steps, default_hold_ms=tap, inter_delay_ms=inter)
             return
 

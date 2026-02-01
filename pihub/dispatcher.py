@@ -14,6 +14,8 @@ try:
 except ImportError:  # pragma: no cover - fallback for older Python
     import importlib_resources
 
+from .validation import parse_ms
+
 # Global repeat knobs (WS only; BLE never repeats)
 REPEAT_INITIAL_MS = 400
 REPEAT_RATE_MS = 400
@@ -29,7 +31,7 @@ class Dispatcher:
       - { "do": "emit", "text": "<pihub.cmd text>", ...extras,
           "when"?: "down"|"up" (default "down"),
           "repeat"?: true,
-          "min_hold_ms"?: <int>   # apply to HA emits only
+          "min_hold_ms"?: <int>   # keymap ms values are permissive (bounded)
         }
       - { "do": "ble",  "usage": "keyboard"|"consumer", "code": "<hid-name>" }
       - { "do": "noop" }  # explicit no-op action
@@ -222,7 +224,14 @@ class Dispatcher:
 
             extras = {k: v for k, v in a.items() if k not in {"do", "when", "text", "repeat", "min_hold_ms"}}
             want_repeat = bool(a.get("repeat"))
-            min_hold_ms = self._safe_int(a.get("min_hold_ms"), default=0)
+            min_hold_ms = parse_ms(
+                a.get("min_hold_ms"),
+                default=0,
+                min=0,
+                max=5000,
+                allow_none=False,
+                context="keymap.min_hold_ms",
+            ) or 0
 
             loop = asyncio.get_running_loop()
 
@@ -301,13 +310,6 @@ class Dispatcher:
             return
         self._last_cmd_fail_log = now
         logger.warning("[dispatcher] HA command send failed: %s", text)
-
-    @staticmethod
-    def _safe_int(value: Any, *, default: int = 0) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
 
     @staticmethod
     def _validate_keymap(doc: dict) -> None:
