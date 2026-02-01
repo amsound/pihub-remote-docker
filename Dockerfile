@@ -3,7 +3,8 @@
 # ================================
 # Multi-stage, aarch64-friendly image for Raspberry Pi OS Lite
 # Stage 1: build Python wheels in a clean env
-FROM python:3.11-slim AS builder
+ARG PYTHON_IMAGE=python:3.11.9-slim
+FROM ${PYTHON_IMAGE} AS builder
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -24,7 +25,7 @@ RUN python -m venv /opt/venv && \
     pip install -r requirements.txt
 
 # Stage 2: slim runtime with only shared libs needed for evdev/DBus/BLE client
-FROM python:3.11-slim
+FROM ${PYTHON_IMAGE}
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
