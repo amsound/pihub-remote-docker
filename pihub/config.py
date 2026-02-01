@@ -6,13 +6,6 @@ import os
 from dataclasses import dataclass
 
 
-def _getenv_bool(name: str, default: bool = False) -> bool:
-    v = os.getenv(name)
-    if v is None:
-        return default
-    return v.strip().lower() in {"1", "true", "yes", "on"}
-
-
 @dataclass(frozen=True)
 class Config:
     # All fields are passed explicitly by Config.load(), so we don’t put per-field defaults here.
@@ -20,8 +13,6 @@ class Config:
     ha_token_file: str
     ha_activity: str
     ha_cmd_event: str
-
-    usb_grab: bool
 
     ble_adapter: str
     ble_device_name: str
@@ -38,8 +29,6 @@ class Config:
         ha_activity   = os.getenv("HA_ACTIVITY", "input_select.activity")
         ha_cmd_event  = os.getenv("HA_CMD_EVENT", "pihub.cmd")
 
-        usb_grab      = _getenv_bool("USB_GRAB", True)
-
         ble_adapter      = os.getenv("BLE_ADAPTER", "hci0")
         ble_device_name  = os.getenv("BLE_DEVICE_NAME", "PiHub Remote")
 
@@ -54,7 +43,6 @@ class Config:
             ha_token_file=ha_token_file,
             ha_activity=ha_activity,
             ha_cmd_event=ha_cmd_event,
-            usb_grab=usb_grab,
             ble_adapter=ble_adapter,
             ble_device_name=ble_device_name,
             health_host=health_host,

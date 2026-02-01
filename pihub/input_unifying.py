@@ -39,13 +39,11 @@ class UnifyingReader:
         scancode_map: Dict[str, str],
         on_edge: EdgeCallback,
         *,
-        grab: bool = True,
         edge_queue_maxsize: int = 512,
         on_disconnect: Optional[DisconnectCallback] = None,
     ) -> None:
         self._map = scancode_map
         self._on_edge = on_edge
-        self._grab = grab
         self._edge_queue_maxsize = edge_queue_maxsize
         self._on_disconnect = on_disconnect
 
@@ -124,13 +122,11 @@ class UnifyingReader:
     def _open_device(self, path: str) -> tuple[InputDevice, bool]:
         dev = InputDevice(path)
         grabbed = False
-        if self._grab:
-            try:
-                dev.grab()
-                grabbed = True
-            except Exception:
-                # continue without grab
-                pass
+        try:
+            dev.grab()
+            grabbed = True
+        except Exception as exc:
+            logger.warning("[usb] failed to grab input device: %s", exc)
         return dev, grabbed
 
     async def _run(self) -> None:
