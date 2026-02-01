@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
@@ -217,6 +218,21 @@ class BTLEController:
         """Return True when the transport is currently connected and ready."""
 
         return self._available
+
+    @property
+    def status(self) -> dict:
+        """Return a snapshot of BLE adapter, advertising, and connection state."""
+
+        runtime = self._tx.runtime
+        connected = False
+        if runtime is not None and getattr(runtime, "hid", None) is not None:
+            connected = bool(getattr(runtime.hid, "_link_ready", False))
+
+        return {
+            "adapter_present": os.path.exists(f"/sys/class/bluetooth/{self._tx._adapter}"),
+            "advertising": _hd.advertising_active(),
+            "connected": connected,
+        }
 
     async def start(self) -> None:
         """Start supervising the BLE transport."""
