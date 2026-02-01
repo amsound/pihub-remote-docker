@@ -126,6 +126,7 @@ async def main() -> None:
         scancode_map=DispatcherRef.scancode_map,
         on_edge=DispatcherRef.on_usb_edge,
         grab=cfg.usb_grab,
+        on_disconnect=DispatcherRef.on_usb_disconnect,
     )
 
     health = HealthServer(

@@ -14,6 +14,7 @@ from typing import Awaitable, Callable, Dict, Optional
 from evdev import InputDevice, ecodes
 
 EdgeCallback = Callable[[str, str], Awaitable[None]] | Callable[[str, str], None]
+DisconnectCallback = Callable[[], Awaitable[None]] | Callable[[], None]
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +41,13 @@ class UnifyingReader:
         *,
         grab: bool = True,
         edge_queue_maxsize: int = 512,
+        on_disconnect: Optional[DisconnectCallback] = None,
     ) -> None:
         self._map = scancode_map
         self._on_edge = on_edge
         self._grab = grab
         self._edge_queue_maxsize = edge_queue_maxsize
+        self._on_disconnect = on_disconnect
 
         self._task: Optional[asyncio.Task] = None
         self._edge_worker: Optional[asyncio.Task] = None
@@ -57,6 +60,7 @@ class UnifyingReader:
         self._input_open = False
         self._receiver_present = False
         self._paired_remote = False
+        self._disconnect_notified = False
 
     # ── Public API ───────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -200,6 +204,7 @@ class UnifyingReader:
             self._input_open = True
             self._last_input_path = path
             self._last_grabbed = grabbed
+            self._disconnect_notified = False
     
             if wait_state != "ready":
                 wait_state = "ready"
@@ -220,6 +225,7 @@ class UnifyingReader:
             _emit = self._emit
             _debug_unknown = logger.isEnabledFor(logging.DEBUG)
             
+            disconnect_seen = False
             try:
                 async for ev in dev.async_read_loop():
                     t = ev.type
@@ -261,6 +267,8 @@ class UnifyingReader:
             except (OSError, IOError) as e:
                 err = getattr(e, "errno", None)
                 if err in (19, 5):  # ENODEV/EIO
+                    disconnect_seen = True
+                    await self._notify_disconnect()
                     await asyncio.sleep(_jittered(backoff))
                     backoff = min(backoff * 2, 10.0)
                 else:
@@ -281,6 +289,8 @@ class UnifyingReader:
                 with contextlib.suppress(Exception):
                     dev.close()
                 self._input_open = False
+                if not disconnect_seen and not self._stop.is_set():
+                    await self._notify_disconnect()
     
         # exit: ensure stop flag remains set
         self._stop.set()
@@ -345,6 +355,20 @@ class UnifyingReader:
                 with contextlib.suppress(Exception):
                     queue.get_nowait()
                     queue.task_done()
+
+    async def _notify_disconnect(self) -> None:
+        if self._disconnect_notified:
+            return
+        self._disconnect_notified = True
+        callback = self._on_disconnect
+        if callback is None:
+            return
+        try:
+            res = callback()
+            if asyncio.iscoroutine(res):
+                await res
+        except Exception as exc:
+            logger.warning("[usb] disconnect handler error: %r", exc)
 
 
 def _autodetect_or_none() -> Optional[str]:
