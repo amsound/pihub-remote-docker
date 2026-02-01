@@ -171,7 +171,7 @@ Volume
 ```json
 {"dest": "pi", "text": "macro", "name": "power_on"}
 ```
-> Options: **power_on / power_off / return_home**, executed from HA (Pi does not run macro sequences).
+> Options: **power_on / power_off / return_home**, executed from HA.
 
 **Send a BLE key:**
 
