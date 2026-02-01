@@ -117,6 +117,12 @@ class Dispatcher:
         if edge == "up":
             self._pressed_at.pop(rem_key, None)
 
+    async def on_usb_disconnect(self) -> None:
+        """Handle USB disconnects to prevent stuck repeats."""
+        await self._cancel_all_repeat_tasks()
+        await self._cancel_all_hold_tasks()
+        self._pressed_at.clear()
+
     # ---- Repeat helpers (WS only) ----
     async def _start_repeat(self, rem_key: str, text: str, extras: dict) -> None:
         if rem_key in self._repeat_tasks:
@@ -137,6 +143,15 @@ class Dispatcher:
         t = self._repeat_tasks.pop(rem_key, None)
         if t:
             t.cancel()
+            with suppress(asyncio.CancelledError):
+                await t
+
+    async def _cancel_all_repeat_tasks(self) -> None:
+        tasks = list(self._repeat_tasks.values())
+        self._repeat_tasks.clear()
+        for t in tasks:
+            t.cancel()
+        for t in tasks:
             with suppress(asyncio.CancelledError):
                 await t
 
@@ -184,6 +199,15 @@ class Dispatcher:
                 t.cancel()
                 with suppress(asyncio.CancelledError):
                     await t
+
+    async def _cancel_all_hold_tasks(self) -> None:
+        tasks = list(self._hold_tasks.values())
+        self._hold_tasks.clear()
+        for t in tasks:
+            t.cancel()
+        for t in tasks:
+            with suppress(asyncio.CancelledError):
+                await t
 
     # ---- Action executor ----
     async def _do_action(
