@@ -123,16 +123,23 @@ A tiny HTTP endpoint publishes a JSON snapshot at `http://<host>:9123/health`:
 ```json
 {
   "status": "ok",
-  "ws_connected": true,
-  "last_activity": "watch",           // from Home Assistant
-  "ble_available": true,              // advertising + HID ready
-  "usb_reader": "running",            // USB loop active
-  "usb_device": "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-kbd",
-  "port": 9123
+  "degraded_reasons": [],
+  "ws": {
+    "connected": true,
+    "last_activity": "watch"          // from Home Assistant
+  },
+  "usb": {
+    "reader": "running",              // USB loop active
+    "device": "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-kbd",
+    "paired": true
+  },
+  "ble": {
+    "available": true                 // advertising + HID ready
+  }
 }
 ```
 
-This can be polled from Home Assistant via a REST sensor or used by container orchestrators for liveness checks. A degraded status means the USB reader or HA websocket is unavailable.
+This can be polled from Home Assistant via a REST sensor or used by container orchestrators for liveness checks. A degraded status can indicate the HA websocket is unavailable, the USB reader is unhealthy, or BLE/USB pairing state is not ready.
 
 ---
 
@@ -171,8 +178,8 @@ Volume
 ```json
 {"dest": "pi", "text": "ble_key", "usage": "consumer", "code": "menu"}
 ```
-> BLE: per-button may use **consumer or keyboard** usages. 40ms defaut hold.
-Optionally include `"hold_ms": "40"` - values accected: `0, 40, 80, 100, 500, 2000.`
+> BLE: per-button may use **consumer or keyboard** usages. 40ms default hold.
+Optionally include `"hold_ms": "40"` - values accepted: `0, 40, 80, 100, 500, 2000.`
 
 ---
 
@@ -201,7 +208,7 @@ Optionally include `"hold_ms": "40"` - values accected: `0, 40, 80, 100, 500, 20
 
 ## 🧪 Troubleshooting
 
-* **No input events?** Ensure the Unifying device appears under `/dev/input/by-id/*Unifying*` and that it’s bind-mounted read-only into the container.
+* **No input events?** Look for `/dev/input/by-id/*event-kbd` (often `usb-Logitech_USB_Receiver-*event-kbd`); if missing, fall back to `/dev/input/by-path/*-event-kbd`. If no remote is paired/active, there may be no `event-kbd` node even if the receiver is plugged in. Ensure the relevant `/dev/input` paths are bind-mounted read-only into the container.
 * **BLE not reacting?** Verify BlueZ DBus socket is present (`/var/run/dbus/system_bus_socket`) and mounted read-only. Use `bluetoothctl` to remove all known devices
 * **Offline drops?** Expected by design: when HA WS is down, send paths return `False` and do not crash the process.
 * **Token issues?** Confirm `HA_TOKEN` is set (preferred) or `TOKEN_FILE` path is mounted and readable.
