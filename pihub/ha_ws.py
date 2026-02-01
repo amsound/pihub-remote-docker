@@ -227,7 +227,7 @@ class HAWS:
     def _extract_trigger_states(self, ev: dict) -> tuple[Optional[dict], Optional[dict]]:
         """
         Return (from_state, to_state) from common subscribe_trigger shapes.
-        Why: HA docs/examples differ between versions; be tolerant. :contentReference[oaicite:1]{index=1}
+        Why: HA docs/examples differ between versions; be tolerant.
         """
         vars_ = ev.get("variables") or {}
         trig = vars_.get("trigger") or {}
@@ -306,15 +306,17 @@ class HAWS:
         return val
 
     async def _apply_activity(self, new_state: Optional[str]) -> None:
-        should_notify = new_state != self._last_activity or new_state is None
-        if new_state != self._last_activity:
-            prior = self._last_activity
-            logger.info("[activity] %s -> %s", prior, new_state)
-            self._last_activity = new_state
-        if should_notify:
-            res = self._on_activity(new_state)
-            if asyncio.iscoroutine(res):
-                await res
+        # Only notify on actual change (including change to/from None)
+        if new_state == self._last_activity:
+            return
+
+        prior = self._last_activity
+        logger.info("[activity] %s -> %s", prior, new_state)
+        self._last_activity = new_state
+
+        res = self._on_activity(new_state)
+        if asyncio.iscoroutine(res):
+            await res
 
     async def _await_result(
         self,
