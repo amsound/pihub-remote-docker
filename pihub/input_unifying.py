@@ -126,7 +126,7 @@ class UnifyingReader:
             dev.grab()
             grabbed = True
         except Exception as exc:
-            logger.warning("[usb] failed to grab input device: %s", exc)
+            logger.warning("[usb] failed to grab input device %s: %s", path, exc)
         return dev, grabbed
 
     async def _run(self) -> None:
