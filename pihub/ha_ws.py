@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import random
 from typing import Any, Awaitable, Callable, Optional
 
 import aiohttp
-import contextlib
+
+from .validation import DEFAULT_MS_WHITELIST, parse_ms_whitelist
 
 OnActivity = Callable[[str], Awaitable[None]] | Callable[[str], None]
 OnCmd      = Callable[[dict], Awaitable[None]] | Callable[[dict], None]
@@ -272,7 +274,12 @@ class HAWS:
                             if t == "macro":
                                 logger.debug("[cmd] macro %s", edata.get("name", "?"))
                             elif t == "ble_key":
-                                hold_ms = self._sanitize_hold_ms(edata.get("hold_ms"))
+                                hold_ms = parse_ms_whitelist(
+                                    edata.get("hold_ms"),
+                                    allowed=DEFAULT_MS_WHITELIST,
+                                    default=40,
+                                    context="ha_ws.hold_ms",
+                                )
                                 edata["hold_ms"] = hold_ms
                                 logger.debug(
                                     "[cmd] ble_key %s/%s hold=%sms",
@@ -311,13 +318,3 @@ class HAWS:
         if session is None or session.closed:
             self._session = session = aiohttp.ClientSession()
         return session
-
-    def _sanitize_hold_ms(self, val: Any, *, default: int = 40) -> int:
-        """Return a whitelisted hold duration, falling back to default."""
-
-        allowed = {0, 40, 80, 100, 500, 2000}
-        try:
-            parsed = int(val)
-        except (TypeError, ValueError):
-            return default
-        return parsed if parsed in allowed else default
