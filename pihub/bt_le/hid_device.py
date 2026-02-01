@@ -22,6 +22,7 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 _hid_service_singleton = None  # set inside start_hid()
+_advertising_state = False
 
 # --------------------------
 # Device identity / advert
@@ -78,9 +79,11 @@ async def _adv_unregister(bus, advert) -> bool:
                 await advert.unregister(bus)
             else:
                 await advert.unregister()
+            _set_advertising_state(False)
             return True
         if hasattr(advert, "stop"):
             await advert.stop()
+            _set_advertising_state(False)
             return True
         return False
     except Exception as e:
@@ -104,11 +107,15 @@ async def _adv_register_and_start(bus, advert) -> str:
 
         if hasattr(advert, "start"):
             await advert.start()
+            _set_advertising_state(True)
             return "registered+started" if did_register else "started"
 
+        if did_register:
+            _set_advertising_state(True)
         return "registered" if did_register else "noop"
     except Exception as e:
         logger.warning("[hid] adv register/start error: %r", e)
+        _set_advertising_state(False)
         return "error"
 
 # --------------------------
@@ -116,6 +123,13 @@ async def _adv_register_and_start(bus, advert) -> str:
 # --------------------------
 def _get_bool(v):  # unwrap dbus_next.Variant or use raw bool
     return bool(v.value) if isinstance(v, Variant) else bool(v)
+
+def _set_advertising_state(active: bool) -> None:
+    global _advertising_state
+    _advertising_state = bool(active)
+
+def advertising_active() -> bool:
+    return _advertising_state
 
 async def trust_device(bus, device_path):
     """Set org.bluez.Device1.Trusted = True for the connected peer."""

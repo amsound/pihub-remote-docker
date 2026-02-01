@@ -52,6 +52,11 @@ class UnifyingReader:
         self._stop = asyncio.Event()
         self._dropped_edges = 0
         self._last_drop_log = 0.0
+        self._last_input_path: Optional[str] = None
+        self._last_grabbed = False
+        self._input_open = False
+        self._receiver_present = False
+        self._paired_remote = False
 
     # ── Public API ───────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -95,6 +100,19 @@ class UnifyingReader:
         t = self._task
         return bool(t and not t.done())
 
+    @property
+    def status(self) -> dict:
+        """Return a snapshot of the current USB reader status."""
+
+        return {
+            "receiver_present": self._receiver_present,
+            "paired_remote": self._paired_remote,
+            "reader_running": self.is_running,
+            "input_open": self._input_open,
+            "input_path": self._last_input_path,
+            "grabbed": self._last_grabbed,
+        }
+
     # ── Internals ───────────────────────────────────────────────────────────
     def _resolve_device_path(self) -> Optional[str]:
         return _autodetect_or_none()
@@ -119,14 +137,17 @@ class UnifyingReader:
         last_wait_log = 0.0
         warn_every = 5
         while not self._stop.is_set():
+            receiver_present = _unifying_receiver_present()
+            self._receiver_present = receiver_present
             path = self._resolve_device_path()
+            self._paired_remote = bool(path)
             if not path:
                 # device not present; wait and retry (jittered)
+                self._input_open = False
                 no_device_failures += 1
                 open_failures = 0
                 sleep_for = _jittered(backoff)
                 now = time.monotonic()
-                receiver_present = _unifying_receiver_present()
                 next_state = "present_no_input" if receiver_present else "absent"
                 log_msg = (
                     "[usb] receiver present; waiting for paired device "
@@ -162,6 +183,7 @@ class UnifyingReader:
             try:
                 dev, grabbed = self._open_device(path)
             except Exception:
+                self._input_open = False
                 open_failures += 1
                 sleep_for = _jittered(backoff)
                 if open_failures == 1 or open_failures % warn_every == 0:
@@ -175,6 +197,9 @@ class UnifyingReader:
                 backoff = min(backoff * 2, 10.0)
                 continue
             open_failures = 0
+            self._input_open = True
+            self._last_input_path = path
+            self._last_grabbed = grabbed
     
             if wait_state != "ready":
                 wait_state = "ready"
@@ -255,6 +280,7 @@ class UnifyingReader:
                         dev.ungrab()
                 with contextlib.suppress(Exception):
                     dev.close()
+                self._input_open = False
     
         # exit: ensure stop flag remains set
         self._stop.set()

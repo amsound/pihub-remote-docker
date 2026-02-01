@@ -68,17 +68,35 @@ class HealthServer:
         """Return a serialisable health snapshot."""
 
         ws_connected = self._ws.is_connected
-        bt_available = self._bt.available
-        usb_running = self._reader.is_running
+        ws_state = {"connected": ws_connected, "last_activity": self._ws.last_activity}
+        usb_state = self._reader.status
+        ble_state = self._bt.status
 
-        ok = ws_connected and usb_running
+        degraded_reasons = []
+
+        if not ws_state["connected"]:
+            degraded_reasons.append("ws.not_connected")
+        if not usb_state["receiver_present"]:
+            degraded_reasons.append("usb.receiver_not_detected")
+        if not usb_state["paired_remote"]:
+            degraded_reasons.append("usb.no_paired_remote")
+        if not usb_state["reader_running"]:
+            degraded_reasons.append("usb.reader_not_running")
+        if not usb_state["input_open"]:
+            degraded_reasons.append("usb.input_not_open")
+        if not usb_state["grabbed"]:
+            degraded_reasons.append("usb.not_grabbed")
+        if not ble_state["adapter_present"]:
+            degraded_reasons.append("ble.adapter_missing")
+        if not ble_state["advertising"]:
+            degraded_reasons.append("ble.not_advertising")
+        if not ble_state["connected"]:
+            degraded_reasons.append("ble.not_connected")
 
         return {
-            "status": "ok" if ok else "degraded",
-            "ws_connected": ws_connected,
-            "last_activity": self._ws.last_activity,
-            "ble_available": bt_available,
-            "usb_reader": "running" if usb_running else "stopped",
-            "usb_device": self._reader.device_path,
-            "port": self._port,
+            "status": "ok" if not degraded_reasons else "degraded",
+            "degraded_reasons": degraded_reasons,
+            "ws": ws_state,
+            "usb": usb_state,
+            "ble": ble_state,
         }
