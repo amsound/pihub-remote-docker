@@ -250,49 +250,92 @@ async def watch_link(bus, advert, hid: "HIDService"):
     Also: unregister adverts on connect; re-register on disconnect.
     """
     import time, contextlib
+
     while True:
         dev_path = await wait_for_any_connection(bus)
+
         with contextlib.suppress(Exception):
             await trust_device(bus, dev_path)
+
         human = await _get_device_alias_or_name(bus, dev_path)
         label = human if human else dev_path
         logger.info("[hid] connected: %s", label)
 
-
         # Services resolved first
-        await wait_until_services_resolved(bus, dev_path, timeout_s=30)
+        services_ok = await wait_until_services_resolved(bus, dev_path, timeout_s=30)
+        if not services_ok:
+            logger.warning("[hid] ServicesResolved timed out; keeping advertising and waiting for disconnect")
+            hid._link_ready = False
+            await wait_for_disconnect(bus, dev_path)
+            logger.info("[hid] disconnected (services not resolved)")
+            # try to ensure we are advertising again
+            await _adv_register_and_start(bus, advert)
+            continue
 
-        # Wait up to ~3s for CCCDs to be enabled on any HID input char
-        deadline = time.monotonic() + 3.0
+        # Wait for CCCDs to be enabled on any HID input char
+        # (3s can be tight on reboot/repair; 8s is a good test window)
+        deadline = time.monotonic() + 8.0
         kb = boot = cc = False
+
         while time.monotonic() < deadline:
             try:
                 kb, boot, cc = hid._notif_state()  # (keyboard, boot-kb, consumer)
             except Exception:
                 kb = boot = cc = False
+
             if kb or boot or cc:
                 break
+
             await asyncio.sleep(0.10)
 
-        # Link ready: host subscribed to at least one input
+        ready = bool(kb or boot or cc)
+        if not ready:
+            hid._link_ready = False
+            logger.warning(
+                "[hid] connected but NOT ready (no CCCD). keeping advertising. kb=%s boot=%s cc=%s",
+                kb, boot, cc
+            )
+
+            # Optional but very effective with Apple devices:
+            # force a clean reconnect attempt rather than staying half-connected.
+            with contextlib.suppress(Exception):
+                root_xml = await bus.introspect("org.bluez", dev_path)
+                dev_obj = bus.get_proxy_object("org.bluez", dev_path, root_xml)
+                dev = dev_obj.get_interface("org.bluez.Device1")
+                await dev.call_disconnect()
+                logger.warning("[hid] forced disconnect (not ready)")
+
+            await wait_for_disconnect(bus, dev_path)
+            logger.info("[hid] disconnected (not ready)")
+
+            # ensure advertising is up for the next attempt
+            await _adv_register_and_start(bus, advert)
+            continue
+
+        # Link truly ready: host subscribed
         hid._link_ready = True
         logger.info("[hid] link ready — notify: kb=%s boot=%s cc=%s", kb, boot, cc)
 
-        # Stop advertising while connected
+        # Now it is safe to stop advertising while connected
         if await _adv_unregister(bus, advert):
             logger.info("[hid] advertising unregistered (connected device)")
 
         # Block here until disconnect
         await wait_for_disconnect(bus, dev_path)
 
-        # Link down
         hid._link_ready = False
         logger.info("[hid] disconnected")
 
-        # Re-register (and start) advertising for next client
-        mode = await _adv_register_and_start(bus, advert)
-        if mode not in ("noop", "error"):
-            logger.info("[hid] advertising registered (no device)")
+        # Re-register (and start) advertising for next client, with retries
+        backoffs = (0.2, 0.5, 1.0, 2.0, 3.0)
+        mode = "error"
+        for t in backoffs:
+            mode = await _adv_register_and_start(bus, advert)
+            if mode not in ("noop", "error"):
+                logger.info("[hid] advertising registered (no device) mode=%s", mode)
+                break
+            logger.warning("[hid] advertising restart failed mode=%s; retry in %.1fs", mode, t)
+            await asyncio.sleep(t)
 
 # --------------------------
 # GATT Services
