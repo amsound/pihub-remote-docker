@@ -21,6 +21,47 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+async def ensure_controller_baseline(bus, adapter_name: str, *, adapter_proxy=None) -> None:
+    """Re-apply the minimum controller state we need for reliable (re)pair + reconnect.
+
+    Why: toggling Powered (or restarting bluetoothd) can silently reset Pairable/Discoverable
+    and timeouts. Apple TV is very sensitive to this during reconnect.
+    """
+    try:
+        from dbus_fast import Variant  # already a dependency elsewhere in this file
+    except Exception:
+        Variant = None  # type: ignore
+
+    path = f"/org/bluez/{adapter_name}"
+
+    # Build a proxy if caller didn't pass one
+    if adapter_proxy is None:
+        try:
+            xml = await bus.introspect("org.bluez", path)
+            adapter_proxy = bus.get_proxy_object("org.bluez", path, xml)
+        except Exception as exc:
+            logger.warning("[hid] Baseline: couldn't introspect %s: %s", path, exc)
+            return
+
+    props = adapter_proxy.get_interface("org.freedesktop.DBus.Properties")
+
+    async def _set(prop: str, sig: str, val):
+        if Variant is None:
+            return
+        try:
+            await props.call_set("org.bluez.Adapter1", prop, Variant(sig, val))
+        except Exception as exc:
+            # Some properties may be read-only depending on controller/BlueZ build
+            logger.debug("[hid] Baseline: set %s=%r failed: %s", prop, val, exc)
+
+    # Keep these "sticky" across restarts and power cycles
+    await _set("Powered", "b", True)
+    await _set("PairableTimeout", "u", 0)
+    await _set("DiscoverableTimeout", "u", 0)
+    await _set("Pairable", "b", True)
+    await _set("Discoverable", "b", True)
+
+
 _hid_service_singleton = None  # set inside start_hid()
 _advertising_state = False
 
@@ -585,12 +626,15 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
 
     proxy = bus.get_proxy_object("org.bluez", f"/org/bluez/{adapter_name}", xml)
     adapter = Adapter(proxy)
+    # Establish a stable baseline BEFORE we touch name/advertising.
+    await ensure_controller_baseline(bus, adapter_name, adapter_proxy=proxy)
     await adapter.set_alias(device_name)
 
     # Agent
     agent = NoIoAgent()
     await agent.register(bus, default=True)
 
+    await ensure_controller_baseline(bus, adapter_name, adapter_proxy=proxy)
     # Services
     dis = DeviceInfoService()
     bas = BatteryService(initial_level=100)
@@ -605,6 +649,7 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
     app.add_service(hid)
 
     async def _power_cycle_adapter():
+        """Toggle adapter power and then re-apply our baseline settings."""
         try:
             await adapter.set_powered(False)
             await asyncio.sleep(0.4)
@@ -612,6 +657,11 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
             await asyncio.sleep(0.8)
         except Exception as e:
             logger.warning("[hid] Bluetooth adapter power-cycle failed: %s", e)
+        # Power-cycling can reset Pairable/Discoverable; re-assert them immediately.
+        await ensure_controller_baseline(bus, adapter_name, adapter_proxy=proxy)
+        # Alias sometimes gets cleared after a controller reset on some stacks.
+        with contextlib.suppress(Exception):
+            await adapter.set_alias(device_name)
 
     # --- Register GATT application (with one retry) ---
     try:
