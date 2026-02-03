@@ -571,7 +571,8 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
         localName=device_name,
         serviceUUIDs=["1812", "180F", "180A"],
         appearance=appearance,
-        timeout=0,
+        timeout=None,
+        duration=None,
         discoverable=True,
     )
     mode = await _adv_register_and_start(bus, advert)
@@ -586,7 +587,8 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
             localName=device_name,
             serviceUUIDs=["1812", "180F", "180A"],
             appearance=appearance,
-            timeout=0,
+            timeout=None,
+            duration=None,
             discoverable=True,
         )
         mode = await _adv_register_and_start(bus, advert)
