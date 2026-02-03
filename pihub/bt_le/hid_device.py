@@ -221,46 +221,36 @@ async def _get_managed_objects(bus):
     om = root.get_interface("org.freedesktop.DBus.ObjectManager")
     return await om.call_get_managed_objects()
 
-async def wait_for_any_connection(bus, poll_interval=0.25):
-    """Return Device1 path once Connected=True (we then wait for ServicesResolved)."""
-    loop = asyncio.get_running_loop()
-    fut = loop.create_future()
+async def wait_for_any_connection(
+    bus,
+    adapter_name: str,
+    timeout_s: float | None = None,
+) -> str | None:
+    """Return the DBus object path of the first connected Device1 on this adapter.
 
-    # quick poll
-    objs = await _get_managed_objects(bus)
-    for path, props in objs.items():
-        dev = props.get("org.bluez.Device1")
-        if dev and _get_bool(dev.get("Connected", False)):
-            return path
+    Centrals (including Apple TV) will often connect *before* the user confirms the pairing popup,
+    just to browse GATT and begin the bonding flow. That is expected.
 
-    def handler(msg):
-        if msg.message_type is not MessageType.SIGNAL:
-            return
-        if msg.member == "InterfacesAdded":
-            obj_path, ifaces = msg.body
+    If timeout_s is None, wait forever.
+    """
+    adapter_path = f"/org/bluez/{adapter_name}"
+    deadline = None if timeout_s is None else (time.monotonic() + float(timeout_s))
+
+    while True:
+        managed = await _get_managed_objects(bus)
+        for path, ifaces in managed.items():
             dev = ifaces.get("org.bluez.Device1")
-            if dev and _get_bool(dev.get("Connected", False)) and not fut.done():
-                fut.set_result(obj_path)
-        elif msg.member == "PropertiesChanged" and msg.path:
-            iface, changed, _ = msg.body
-            if iface == "org.bluez.Device1" and "Connected" in changed and _get_bool(changed["Connected"]) and not fut.done():
-                fut.set_result(msg.path)
+            if not dev:
+                continue
+            if dev.get("Adapter") != adapter_path:
+                continue
+            if bool(dev.get("Connected", False)):
+                return path
 
-    bus.add_message_handler(handler)
-    try:
-        while True:
-            if fut.done():
-                return await fut
-            # polling fallback
-            objs = await _get_managed_objects(bus)
-            for path, props in objs.items():
-                dev = props.get("org.bluez.Device1")
-                if dev and _get_bool(dev.get("Connected", False)):
-                    return path
-            await asyncio.sleep(poll_interval)
-    finally:
-        bus.remove_message_handler(handler)
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
 
+        await asyncio.sleep(0.2)
 async def wait_until_services_resolved(bus, device_path, timeout_s=30, poll_interval=0.25):
     """Wait for Device1.ServicesResolved == True for this device."""
     import time
@@ -318,127 +308,127 @@ async def _get_device_alias_or_name(bus, device_path) -> str:
     except Exception:
         return ""
 
-async def watch_link(bus, advert, hid: "HIDService"):
-    """
-    - Wait for a connection
-    - Require ServicesResolved
-    - Require CCCD enabled on at least one HID input before declaring link ready
-    - Only then stop advertising
-    - On disconnect, restart advertising (with retries)
-    """
-    import time, contextlib
 
-    async def _disconnect_device(dev_path: str):
-        # Best-effort disconnect from our side (optional, used on bad handshakes)
-        try:
-            xml = await bus.introspect("org.bluez", dev_path)
-            dev_obj = bus.get_proxy_object("org.bluez", dev_path, xml)
-            dev1 = dev_obj.get_interface("org.bluez.Device1")
-            await dev1.call_disconnect()
-        except Exception:
-            pass
+
+async def wait_until_bonded(
+    bus,
+    device_path: str,
+    timeout_s: float = 60.0,
+) -> bool:
+    """Wait for Device1.Bonded==True on a specific device path."""
+    deadline = time.monotonic() + float(timeout_s)
+    while time.monotonic() < deadline:
+        managed = await _get_managed_objects(bus)
+        dev = managed.get(device_path, {}).get("org.bluez.Device1")
+        if not dev:
+            return False
+        if bool(dev.get("Bonded", False)):
+            return True
+        await asyncio.sleep(0.2)
+    return False
+async def watch_link(bus, adapter_name: str, advert, hid):
+    """Supervise advertising + incoming connections for this HID-over-GATT peripheral."""
+    fail_window_s = 120.0
+    fail_threshold = 3
+    fail_count = 0
+    fail_window_start = 0.0
+
+    connect_wait_s = 180.0
+    ready_deadline_s = 120.0
+    cccd_grace_s = 90.0
+
+    async def _note_failure(reason: str):
+        nonlocal fail_count, fail_window_start
+        now = time.monotonic()
+        if fail_window_start == 0.0 or (now - fail_window_start) > fail_window_s:
+            fail_window_start = now
+            fail_count = 0
+        fail_count += 1
+        logger.warning("[hid] Link failure (%s). failures=%d/%d", reason, fail_count, fail_threshold)
+
+        if fail_count >= fail_threshold:
+            logger.warning("[hid] Too many failures; power-cycling adapter and re-baselining.")
+            try:
+                await _power_cycle_adapter(bus, adapter_name)
+            except Exception as e:
+                logger.warning("[hid] Adapter power-cycle failed: %s", e)
+            try:
+                await ensure_controller_baseline(bus, adapter_name)
+            except Exception as e:
+                logger.warning("[hid] Baseline after power-cycle failed: %s", e)
+            fail_window_start = time.monotonic()
+            fail_count = 0
 
     while True:
-        dev_path = await wait_for_any_connection(bus)
+        try:
+            await ensure_controller_baseline(bus, adapter_name)
+        except Exception as e:
+            logger.warning("[hid] Baseline ensure failed: %s", e)
 
-        # Trusting is fine, but never let it break the flow
-        with contextlib.suppress(Exception):
-            await trust_device(bus, dev_path)
-
-        human = await _get_device_alias_or_name(bus, dev_path)
-        label = human if human else dev_path
-        logger.info("[hid] connected: %s", label)
-
-        # Always start from "not ready" on a fresh connect
-        hid._link_ready = False
-
-        # 1) Wait for ServicesResolved (critical for Apple TV stability)
-        services_ok = await wait_until_services_resolved(bus, dev_path, timeout_s=30)
-        if not services_ok:
-            logger.warning("[hid] ServicesResolved timed out; keeping advertising and waiting for disconnect")
-            # Keep advertising ON here (important) and wait for the host to drop
-            await wait_for_disconnect(bus, dev_path)
-            hid._link_ready = False
-            logger.info("[hid] disconnected (services not resolved)")
-            # Best-effort: ensure advertising is running (some stacks stop it on connect)
-            for attempt, delay in enumerate((0.0, 0.5, 1.0, 2.0), start=1):
-                if delay:
-                    await asyncio.sleep(delay)
-                mode = await _adv_register_and_start(bus, advert)
-                if mode != "error":
-                    logger.info("[hid] advertising registered (no device) mode=%s", mode)
-                    break
-            else:
-                raise RuntimeError("Failed to restart advertising after ServicesResolved timeout")
+        try:
+            if not getattr(advert, "registered", False):
+                await advert.register(bus)
+        except Exception as e:
+            logger.warning("[hid] Advertisement register failed: %s", e)
+            await asyncio.sleep(1.0)
             continue
 
-        # 2) Wait for CCCD enable on any HID input report
-        # Apple TV sometimes connects, pairs, then delays CCCD enable.
-        deadline = time.monotonic() + 6.0  # give it longer than 3s
-        kb = boot = cc = False
-        while time.monotonic() < deadline:
-            try:
-                kb, boot, cc = hid._notif_state()  # (keyboard, boot-kb, consumer)
-            except Exception:
-                kb = boot = cc = False
-            if kb or boot or cc:
-                break
-            await asyncio.sleep(0.10)
-
-        if not (kb or boot or cc):
-            # Not actually usable yet. Keep advertising so the Apple TV UI can still “find” it.
-            logger.warning("[hid] CCCD not enabled; keeping advertising (kb=%s boot=%s cc=%s)", kb, boot, cc)
-
-            # Optional: nudge the host by dropping the connection if it never completes setup.
-            # This prevents a “half-connected” state that blocks discovery.
-            await _disconnect_device(dev_path)
-
-            await wait_for_disconnect(bus, dev_path)
-            hid._link_ready = False
-            logger.info("[hid] disconnected (cccd not enabled)")
-            # Ensure advertising is running again
-            for attempt, delay in enumerate((0.0, 0.5, 1.0, 2.0), start=1):
-                if delay:
-                    await asyncio.sleep(delay)
-                mode = await _adv_register_and_start(bus, advert)
-                if mode != "error":
-                    logger.info("[hid] advertising registered (no device) mode=%s", mode)
-                    break
-            else:
-                raise RuntimeError("Failed to restart advertising after CCCD-not-enabled disconnect")
+        logger.info("[hid] advertising (waiting for central)…")
+        dev_path = await wait_for_any_connection(bus, adapter_name, timeout_s=connect_wait_s)
+        if not dev_path:
             continue
 
-        # 3) Link is actually usable now
-        hid._link_ready = True
-        logger.info("[hid] link ready — notify: kb=%s boot=%s cc=%s", kb, boot, cc)
+        logger.info("[hid] connected: %s", dev_path)
 
-        # 4) Stop advertising while connected (now that we’re truly ready)
-        with contextlib.suppress(Exception):
-            did = await _adv_unregister(bus, advert)
-            if did:
-                logger.info("[hid] advertising unregistered (connected device)")
+        ready_deadline = time.monotonic() + ready_deadline_s
+        have_services = False
+        have_bond = False
+        have_cccd = False
 
-        # 5) Wait until disconnect
-        await wait_for_disconnect(bus, dev_path)
-
-        hid._link_ready = False
-        logger.info("[hid] disconnected")
-
-        # 6) Re-register/start advertising (retry a few times, then fail loud)
-        for attempt, delay in enumerate((0.0, 0.5, 1.0, 2.0), start=1):
-            if delay:
-                await asyncio.sleep(delay)
-            mode = await _adv_register_and_start(bus, advert)
-            if mode != "error":
-                logger.info("[hid] advertising registered (no device) mode=%s", mode)
+        while time.monotonic() < ready_deadline:
+            managed = await _get_managed_objects(bus)
+            dev = managed.get(dev_path, {}).get("org.bluez.Device1")
+            if not dev or not bool(dev.get("Connected", False)):
+                await _note_failure("disconnected during setup")
                 break
+
+            if not have_services:
+                have_services = await wait_until_services_resolved(bus, dev_path, timeout_s=0.5)
+
+            if not have_bond:
+                have_bond = await wait_until_bonded(bus, dev_path, timeout_s=0.5)
+
+            have_cccd = bool(getattr(hid, "_notif_state", {}))
+
+            if have_services and have_bond and have_cccd:
+                logger.info("[hid] ready (services+bond+cccd).")
+                break
+
+            if have_services and have_bond and not have_cccd:
+                if (ready_deadline - time.monotonic()) < cccd_grace_s:
+                    ready_deadline = time.monotonic() + cccd_grace_s
+
+            await asyncio.sleep(0.2)
         else:
-            raise RuntimeError("Failed to restart advertising after disconnect")
+            await _note_failure("setup timeout")
 
-# --------------------------
-# GATT Services
-# --------------------------
-# --- Battery Service (0x180F) ---
+        managed = await _get_managed_objects(bus)
+        dev = managed.get(dev_path, {}).get("org.bluez.Device1", {})
+        if not bool(dev.get("Connected", False)):
+            await asyncio.sleep(0.5)
+            continue
+
+        if have_bond:
+            try:
+                if getattr(advert, "registered", False):
+                    await advert.unregister(bus)
+            except Exception as e:
+                logger.warning("[hid] Advertisement unregister failed: %s", e)
+
+        logger.info("[hid] link active; waiting for disconnect…")
+        await wait_until_disconnected(bus, dev_path)
+        logger.info("[hid] disconnected; restarting advertising loop")
+        await asyncio.sleep(0.5)
 class BatteryService(Service):
     def __init__(self, initial_level: int = 100):
         super().__init__("180F", True)
