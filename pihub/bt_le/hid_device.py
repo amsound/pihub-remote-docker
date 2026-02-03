@@ -687,13 +687,23 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
 
     logger.info("[hid] advertising registered as %s on %s", device_name, adapter_name)
 
-    # Watcher
-    link_task = asyncio.create_task(watch_link(bus, advert, hid), name="hid_watch_link")
-    tasks = [link_task]
-
-    # Make sure nothing is logically "held" at startup
-    with contextlib.suppress(Exception):
-        hid.release_all()
+    # Watcher / startup sanity
+    try:
+        link_task = asyncio.create_task(watch_link(bus, adapter_name, advert, hid))
+        tasks = [link_task]
+        # Make sure we start from a clean HID state (harmless on first boot)
+        with contextlib.suppress(Exception):
+            hid.release_all()
+    except Exception:
+        # If anything fails after we registered the app/advertisement, clean up so we
+        # don't leak advertisements (which leads to 'Maximum advertisements reached').
+        with contextlib.suppress(Exception):
+            await _adv_unregister(adv_mgr, advert)
+        with contextlib.suppress(Exception):
+            await app.unregister()
+        with contextlib.suppress(Exception):
+            hid.release_all()
+        raise
 
     async def shutdown():
         for t in list(tasks):
