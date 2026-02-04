@@ -234,6 +234,7 @@ async def wait_for_any_connection(
     If timeout_s is None, wait forever.
     """
     adapter_path = f"/org/bluez/{adapter_name}"
+    bluez_root = "/org/bluez"
     deadline = None if timeout_s is None else (time.monotonic() + float(timeout_s))
 
     while True:
@@ -340,17 +341,52 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
     log = logger
     bus = runtime.bus
     adapter_name = runtime.adapter_name
+    adapter_path = f"/org/bluez/{adapter_name}"
+    bluez_root = "/org/bluez"
+    dev_prefix = f"{adapter_path}/dev_"
+
+    managed_cache: dict[str, dict] = {}
+
+    async def _refresh_managed_cache() -> dict[str, dict]:
+        nonlocal managed_cache
+        managed_cache = await _get_managed_objects(bus)
+        return managed_cache
+
+    def _get_cached_device_props(device_path: str) -> dict:
+        return managed_cache.get(device_path, {}).get("org.bluez.Device1", {})
 
     async def _get_device_address(device_path: str) -> str:
-        objs = await _get_managed_objects(bus)
-        dev = objs.get(device_path, {}).get("org.bluez.Device1", {})
-        return _get_str(dev.get("Address"))
+        cached = _get_cached_device_props(device_path)
+        if cached:
+            addr = _get_str(cached.get("Address"))
+            if addr:
+                return addr
+        try:
+            root_xml = await bus.introspect("org.bluez", device_path)
+            dev_obj = bus.get_proxy_object("org.bluez", device_path, root_xml)
+            props = dev_obj.get_interface("org.freedesktop.DBus.Properties")
+            addr = await props.call_get("org.bluez.Device1", "Address")
+            return _get_str(addr)
+        except Exception:
+            return ""
+
+    def _connected_devices_from(managed: dict[str, dict]) -> set[str]:
+        connected = set()
+        for path, ifaces in managed.items():
+            dev = ifaces.get("org.bluez.Device1")
+            if not dev:
+                continue
+            if not path.startswith(dev_prefix):
+                continue
+            if _get_bool(dev.get("Connected", False)):
+                connected.add(path)
+        return connected
 
     def _cccd_enabled() -> bool:
         return any(runtime.hid._notif_state())
 
     async def _maybe_ready() -> None:
-        if runtime.ready or not runtime.connected:
+        if runtime.ready or not runtime.connected or not runtime.device_path:
             return
         if not runtime.services_resolved or not _cccd_enabled():
             return
@@ -358,10 +394,12 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
         runtime.hid._link_ready = True
         log.debug("[hid] ready (services+cccd).")
 
-    def _note_connected(device_path: str, addr: str | None) -> None:
+    def _note_connected(device_path: str, addr: str | None, services_resolved: bool | None = None) -> None:
         runtime.connected = True
         runtime.device_path = device_path
         runtime.peer_mac = addr or None
+        if services_resolved is not None:
+            runtime.services_resolved = bool(services_resolved)
         _set_connected(True, device_path=device_path, address=addr)
 
     def _note_disconnected() -> None:
@@ -373,25 +411,47 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
         runtime.hid._link_ready = False
         _set_connected(False)
 
-    async def _handle_connected(device_path: str, changed: dict) -> None:
-        addr = _get_str(changed.get("Address")) or await _get_device_address(device_path) or "unknown"
-        runtime.services_resolved = _get_bool(changed.get("ServicesResolved"))
-        runtime.ready = False
-        runtime.hid._link_ready = False
-        _note_connected(device_path, addr)
-        log.info("[hid] connected %s", addr)
-        stopped = await _adv_unregister(runtime)
-        if stopped:
-            log.info("[hid] advertising stopped")
-        await _maybe_ready()
-
-    async def _handle_disconnected(device_path: str) -> None:
-        addr = runtime.peer_mac or await _get_device_address(device_path) or "unknown"
-        _note_disconnected()
-        log.info("[hid] disconnected %s", addr)
+    async def _sync_advertising() -> None:
+        if runtime.connected_devices:
+            stopped = await _adv_unregister(runtime)
+            if stopped:
+                log.info("[hid] advertising stopped")
+            return
         started = await _adv_register(runtime, cfg)
         if started:
             log.info("[hid] advertising resumed")
+
+    async def _handle_connected(device_path: str, *, services_resolved: bool | None = None) -> None:
+        addr = await _get_device_address(device_path) or "unknown"
+        if device_path not in runtime.connected_devices:
+            runtime.connected_devices.add(device_path)
+            log.info("[hid] connected %s", addr)
+        if not runtime.device_path:
+            runtime.ready = False
+            runtime.hid._link_ready = False
+            _note_connected(device_path, addr, services_resolved=services_resolved)
+        await _sync_advertising()
+        await _maybe_ready()
+
+    async def _handle_disconnected(device_path: str, *, addr: str | None = None) -> None:
+        addr = addr or await _get_device_address(device_path) or "unknown"
+        was_connected = device_path in runtime.connected_devices
+        if was_connected:
+            runtime.connected_devices.discard(device_path)
+            log.info("[hid] disconnected %s", addr)
+        if runtime.device_path == device_path:
+            if runtime.connected_devices:
+                new_path = sorted(runtime.connected_devices)[0]
+                dev = _get_cached_device_props(new_path)
+                new_addr = _get_str(dev.get("Address")) or await _get_device_address(new_path) or "unknown"
+                runtime.services_resolved = _get_bool(dev.get("ServicesResolved", False))
+                runtime.ready = False
+                runtime.hid._link_ready = False
+                _note_connected(new_path, new_addr, services_resolved=runtime.services_resolved)
+            else:
+                _note_disconnected()
+        if not runtime.connected_devices:
+            await _sync_advertising()
 
     async def _handle_services_resolved(device_path: str) -> None:
         if runtime.device_path and runtime.device_path != device_path:
@@ -405,54 +465,96 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
             await asyncio.sleep(0.25)
 
     async def _seed_existing_connection() -> None:
-        managed = await _get_managed_objects(bus)
-        adapter_path = f"/org/bluez/{adapter_name}"
-        for path, ifaces in managed.items():
-            dev = ifaces.get("org.bluez.Device1")
-            if not dev:
-                continue
-            if _get_str(dev.get("Adapter")) != adapter_path:
-                continue
-            if not _get_bool(dev.get("Connected", False)):
-                continue
-            addr = _get_str(dev.get("Address")) or "unknown"
+        managed = await _refresh_managed_cache()
+        runtime.connected_devices = _connected_devices_from(managed)
+        if runtime.connected_devices:
+            path = sorted(runtime.connected_devices)[0]
+            dev = _get_cached_device_props(path)
+            addr = _get_str(dev.get("Address")) or await _get_device_address(path) or "unknown"
             runtime.services_resolved = _get_bool(dev.get("ServicesResolved", False))
             runtime.ready = False
             runtime.hid._link_ready = False
-            _note_connected(path, addr)
+            _note_connected(path, addr, services_resolved=runtime.services_resolved)
+            await _sync_advertising()
             log.info("[hid] connected %s", addr)
-            stopped = await _adv_unregister(runtime)
-            if stopped:
-                log.info("[hid] advertising stopped")
-            await _maybe_ready()
-            break
+        else:
+            _note_disconnected()
+            await _sync_advertising()
 
     loop = asyncio.get_running_loop()
     ready_task = None
+    reconcile_task = None
+
+    async def _reconcile_loop() -> None:
+        while True:
+            managed = await _refresh_managed_cache()
+            desired = _connected_devices_from(managed)
+            if desired != runtime.connected_devices:
+                added = desired - runtime.connected_devices
+                removed = runtime.connected_devices - desired
+                for path in sorted(removed):
+                    await _handle_disconnected(path)
+                for path in sorted(added):
+                    dev = _get_cached_device_props(path)
+                    services_resolved = _get_bool(dev.get("ServicesResolved", False))
+                    await _handle_connected(path, services_resolved=services_resolved)
+                runtime.connected_devices = desired
+                if not runtime.connected_devices:
+                    _note_disconnected()
+                elif runtime.device_path not in runtime.connected_devices:
+                    path = sorted(runtime.connected_devices)[0]
+                    dev = _get_cached_device_props(path)
+                    addr = _get_str(dev.get("Address")) or await _get_device_address(path) or "unknown"
+                    runtime.services_resolved = _get_bool(dev.get("ServicesResolved", False))
+                    runtime.ready = False
+                    runtime.hid._link_ready = False
+                    _note_connected(path, addr, services_resolved=runtime.services_resolved)
+            await asyncio.sleep(5.0)
 
     def handler(msg):
         nonlocal ready_task
         if msg.message_type is not MessageType.SIGNAL:
+            return
+        if msg.member == "InterfacesAdded":
+            if not msg.path.startswith(bluez_root):
+                return
+            path, ifaces = msg.body
+            dev = ifaces.get("org.bluez.Device1")
+            if not dev or not path.startswith(dev_prefix):
+                return
+            managed_cache[path] = ifaces
+            if _get_bool(dev.get("Connected", False)):
+                loop.create_task(_handle_connected(path, services_resolved=_get_bool(dev.get("ServicesResolved", False))))
+            return
+        if msg.member == "InterfacesRemoved":
+            if not msg.path.startswith(bluez_root):
+                return
+            path, _ifaces = msg.body
+            if not path.startswith(dev_prefix):
+                return
+            cached_addr = _get_str(_get_cached_device_props(path).get("Address"))
+            loop.create_task(_handle_disconnected(path, addr=cached_addr or None))
+            managed_cache.pop(path, None)
             return
         if msg.member != "PropertiesChanged":
             return
         iface, changed, _ = msg.body
         if iface != "org.bluez.Device1":
             return
-        if not msg.path.startswith(f"/org/bluez/{adapter_name}/dev_"):
+        if not msg.path.startswith(dev_prefix):
             return
+
+        if msg.path not in managed_cache:
+            managed_cache[msg.path] = {"org.bluez.Device1": {}}
+        managed_cache[msg.path]["org.bluez.Device1"].update(changed)
 
         if "Connected" in changed:
             if _get_bool(changed["Connected"]):
-                if runtime.connected and runtime.device_path == msg.path:
-                    return
                 if ready_task:
                     ready_task.cancel()
                 ready_task = loop.create_task(_poll_ready())
-                loop.create_task(_handle_connected(msg.path, changed))
+                loop.create_task(_handle_connected(msg.path, services_resolved=_get_bool(changed.get("ServicesResolved", False))))
             else:
-                if not runtime.connected or runtime.device_path != msg.path:
-                    return
                 if ready_task:
                     ready_task.cancel()
                     ready_task = None
@@ -463,9 +565,14 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
     bus.add_message_handler(handler)
     try:
         await _seed_existing_connection()
+        reconcile_task = asyncio.create_task(_reconcile_loop())
         while True:
             await asyncio.sleep(1.0)
     finally:
+        if reconcile_task:
+            reconcile_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reconcile_task
         if ready_task:
             ready_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -642,6 +749,7 @@ class HidRuntime:
     peer_mac: str | None = None
     services_resolved: bool = False
     ready: bool = False
+    connected_devices: set[str] = field(default_factory=set)
     advert_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 async def start_hid(config) -> tuple[HidRuntime, callable]:
