@@ -4,7 +4,6 @@
 import asyncio
 import os
 import contextlib
-import inspect
 import logging
 import time
 
@@ -129,65 +128,40 @@ async def _get_adv_manager(bus, adapter_name: str):
     proxy = bus.get_proxy_object("org.bluez", f"/org/bluez/{adapter_name}", obj)
     return proxy.get_interface("org.bluez.LEAdvertisingManager1")
 
+def _make_advert(cfg, runtime) -> Advertisement:
+    """Create the single BLE advertisement instance for the HID service."""
+    device_name = getattr(cfg, "device_name", None) or os.uname().nodename
+    appearance = int(getattr(cfg, "appearance", APPEARANCE))
+    return Advertisement(
+        localName=device_name,
+        serviceUUIDs=["1812"],
+        appearance=appearance,
+    )
 
-async def _adv_unregister(bus, *args):
-    """Unregister a previously-registered advertisement.
+def _default_advert_path() -> str:
+    return f"/com/spacecheese/bluez_peripheral/advert_{os.getpid()}"
 
-    Backwards compatible with older call sites:
-      - _adv_unregister(bus, advert)
-      - _adv_unregister(bus, adapter_name, advert_or_path)
+async def _adv_register(runtime, cfg) -> None:
+    if runtime.advertising:
+        return
+    if runtime.advert is None:
+        runtime.advert = _make_advert(cfg, runtime)
+    if runtime.advert_path is None:
+        runtime.advert_path = _default_advert_path()
+    await runtime.advert.register(runtime.bus, adapter=runtime.adapter, path=runtime.advert_path)
+    runtime.advertising = True
+    _set_advertising_state(True)
 
-    Where advert_or_path is either:
-      - an Advertisement instance with .path, or
-      - an object-path string like '/org/bluez/...'
-    """
-    if len(args) == 1:
-        adapter_name = "hci0"
-        advert_or_path = args[0]
-    elif len(args) == 2:
-        adapter_name, advert_or_path = args
-    else:
-        raise TypeError(f"_adv_unregister expected 2 or 3 positional args (incl bus), got {1+len(args)}")
-
-    advert_path = None
-    if isinstance(advert_or_path, str):
-        advert_path = advert_or_path
-    else:
-        advert_path = getattr(advert_or_path, "path", None)
-
-    if not advert_path:
-        raise ValueError("No advertisement object path available to unregister")
-
-    mgr = await _get_adv_manager(bus, adapter_name)
-    await mgr.call_unregister_advertisement(advert_path)
-
-async def _adv_register_and_start(bus, advert) -> str:
-    """
-    (Re)register (+ start if supported). Returns a short mode label:
-    'registered+started', 'registered', or 'noop'. Only logs on error.
-    """
-    try:
-        did_register = False
-        if hasattr(advert, "register"):
-            sig = inspect.signature(advert.register)
-            if "bus" in sig.parameters:
-                await advert.register(bus)
-            else:
-                await advert.register()
-            did_register = True
-
-        if hasattr(advert, "start"):
-            await advert.start()
-            _set_advertising_state(True)
-            return "registered+started" if did_register else "started"
-
-        if did_register:
-            _set_advertising_state(True)
-        return "registered" if did_register else "noop"
-    except Exception as e:
-        logger.warning("[hid] adv register/start error: %r", e)
-        _set_advertising_state(False)
-        return "error"
+async def _adv_unregister(runtime) -> None:
+    if not runtime.advertising:
+        return
+    if runtime.advert is not None:
+        await runtime.advert.unregister()
+    elif runtime.advert_path:
+        mgr = await _get_adv_manager(runtime.bus, runtime.adapter_name)
+        await mgr.call_unregister_advertisement(runtime.advert_path)
+    runtime.advertising = False
+    _set_advertising_state(False)
 
 # --------------------------
 # BlueZ object manager helpers
@@ -344,7 +318,7 @@ async def wait_until_bonded(
         await asyncio.sleep(0.2)
     return False
 
-async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool = True):
+async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
     """Robust advertise/connect/reconnect loop for the HID peripheral.
 
     Key behaviors:
@@ -355,110 +329,101 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
       - On disconnect, restart advertising and repeat.
     """
     log = logger
+    bus = runtime.bus
+    adapter_name = runtime.adapter_name
 
-    async def _wait_until_disconnected(dev_path: str, *, poll_s: float = 0.5):
-        # Poll via GetManagedObjects to avoid relying on signal delivery.
-        while True:
-            objs = await _get_managed_objects(bus)
-            props = objs.get(dev_path, {}).get('org.bluez.Device1', {})
-            if not props:
-                return
-            if not props.get('Connected', False):
-                return
-            await asyncio.sleep(poll_s)
-
-    async def _pick_connected_device():
+    async def _get_device_address(device_path: str) -> str:
         objs = await _get_managed_objects(bus)
-        for path, ifaces in objs.items():
-            if not path.startswith(f'/org/bluez/{adapter_name}/dev_'):
-                continue
-            dev = ifaces.get('org.bluez.Device1')
-            if not dev:
-                continue
-            if dev.get('Connected', False):
-                return path, dev
-        return None, None
+        dev = objs.get(device_path, {}).get("org.bluez.Device1", {})
+        return _get_str(dev.get("Address"))
 
-    async def _ensure_advertising():
-        # Try not to spam RegisterAdvertisement; only register if we have none.
-        if advertising_active():
-            return True
-        try:
-            await _adv_register_and_start(bus, adapter_name, advert)
-            log.info("[hid] advertising registered as %s on %s", hid.device_name, adapter_name)
-        except Exception as e:
-            msg = str(e)
-            if "Maximum advertisements reached" in msg:
-                log.warning("[hid] Advertisement register failed: Maximum advertisements reached")
-                await _adv_unreg_all_known(bus, adapter_name)
-            else:
-                log.warning("[hid] Advertisement register failed: %s", e)
-            return False
+    def _cccd_enabled() -> bool:
+        return any(runtime.hid._notif_state())
 
-    async def _stop_advertising_if_running():
-        if not advertising_active():
+    async def _maybe_ready() -> None:
+        if runtime.ready or not runtime.connected:
             return
-        await _adv_unregister(bus, adapter_name, getattr(advert, "path", None))
-        # advertising stopped
+        if not runtime.services_resolved or not _cccd_enabled():
+            return
+        runtime.ready = True
+        runtime.hid._link_ready = True
+        log.info("[hid] ready (services+cccd).")
+        await _adv_unregister(runtime)
+        log.info("[hid] advertising stopped")
 
-    while True:
-        try:
-            # ensure_controller_baseline() only manages adapter baseline (powered, alias,
-            # discoverable/bondable, etc). Pairing policy is handled by the agent + our
-            # own flow, so don't pass allow_pairing here.
-            await ensure_controller_baseline(bus, adapter_name)
-        except Exception as e:
-            log.warning("[hid] baseline ensure failed: %s", e)
+    async def _handle_connected(device_path: str, changed: dict) -> None:
+        runtime.connected = True
+        runtime.device_path = device_path
+        addr = _get_str(changed.get("Address")) or await _get_device_address(device_path)
+        runtime.peer_mac = addr or None
+        runtime.services_resolved = _get_bool(changed.get("ServicesResolved"))
+        runtime.ready = False
+        runtime.hid._link_ready = False
+        log.info("[hid] connected: %s %s", device_path, addr)
+        await _maybe_ready()
 
-        ok = await _ensure_advertising()
-        if not ok:
-            await asyncio.sleep(2.0)
-            continue
+    async def _handle_disconnected(device_path: str) -> None:
+        addr = runtime.peer_mac or await _get_device_address(device_path)
+        runtime.connected = False
+        runtime.device_path = None
+        runtime.peer_mac = None
+        runtime.services_resolved = False
+        runtime.ready = False
+        runtime.hid._link_ready = False
+        log.info("[hid] disconnected: %s %s", device_path, addr)
+        await _adv_register(runtime, cfg)
+        log.info("[hid] advertising started")
 
-        log.info("[hid] advertising (waiting for central)…")
+    async def _handle_services_resolved(device_path: str) -> None:
+        if runtime.device_path and runtime.device_path != device_path:
+            return
+        runtime.services_resolved = True
+        await _maybe_ready()
 
-        # Wait for first connection.
-        dev_path, dev_props = None, None
-        while dev_path is None:
-            dev_path, dev_props = await _pick_connected_device()
-            if dev_path is None:
-                await asyncio.sleep(0.5)
+    async def _poll_ready() -> None:
+        while runtime.connected and not runtime.ready:
+            await _maybe_ready()
+            await asyncio.sleep(0.25)
 
-        addr = dev_props.get('Address')
-        try:
-            addr = addr.value  # dbus_fast Variant
-        except Exception:
-            pass
-        log.info("[hid] connected: %s%s", dev_path, f" ({addr})" if addr else "")
-        _set_connected(True, dev_path, str(addr) if addr else None)
+    loop = asyncio.get_running_loop()
+    ready_task = None
 
-        try:
-            # Wait for “ready” state: services resolved + bonded + CCCD writes.
-            await wait_until_services_resolved(bus, dev_path, timeout_s=20.0)
-            await wait_until_bonded(bus, dev_path, timeout_s=20.0)
-            await wait_for_any_connection(bus, adapter_name, timeout_s=20.0)
-            log.info("[hid] ready (services+bond+cccd).")
-        except Exception as e:
-            log.warning("[hid] ready wait failed (will keep running): %s", e)
-            _note_failure(hid, where="ready_wait")
+    def handler(msg):
+        nonlocal ready_task
+        if msg.message_type is not MessageType.SIGNAL:
+            return
+        if msg.member != "PropertiesChanged":
+            return
+        iface, changed, _ = msg.body
+        if iface != "org.bluez.Device1":
+            return
+        if not msg.path.startswith(f"/org/bluez/{adapter_name}/dev_"):
+            return
 
-        # Once connected, stop advertising so other devices don’t keep seeing us.
-        try:
-            if advertising_active():
-                await _stop_advertising_if_running()
-                log.info('[hid] advertising stopped (central connected)')
-        except Exception as e:
-            log.warning('[hid] failed to stop advertising: %s', e)
+        if "Connected" in changed:
+            if _get_bool(changed["Connected"]):
+                if ready_task:
+                    ready_task.cancel()
+                ready_task = loop.create_task(_poll_ready())
+                loop.create_task(_handle_connected(msg.path, changed))
+            else:
+                if ready_task:
+                    ready_task.cancel()
+                    ready_task = None
+                loop.create_task(_handle_disconnected(msg.path))
+        if "ServicesResolved" in changed and _get_bool(changed["ServicesResolved"]):
+            loop.create_task(_handle_services_resolved(msg.path))
 
-        log.info('[hid] link active; waiting for disconnect…')
-        # Wait until the central disconnects.
-        await _wait_until_disconnected(dev_path)
-        log.info("[hid] disconnected: %s%s", dev_path, f" ({addr})" if addr else "")
-        _set_connected(False)
-
-        # Resume advertising for reconnects.
-        await asyncio.sleep(0.5)
-        await _ensure_advertising()
+    bus.add_message_handler(handler)
+    try:
+        while True:
+            await asyncio.sleep(1.0)
+    finally:
+        if ready_task:
+            ready_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await ready_task
+        bus.remove_message_handler(handler)
 
 class BatteryService(Service):
     def __init__(self, initial_level: int = 100):
@@ -619,9 +584,17 @@ class HIDService(Service):
 class HidRuntime:
     bus: any
     adapter: any
-    advert: any
-    hid: any
-    tasks: list
+    adapter_name: str
+    advert: any = None
+    advert_path: str | None = None
+    hid: any = None
+    tasks: list | None = None
+    connected: bool = False
+    advertising: bool = False
+    device_path: str | None = None
+    peer_mac: str | None = None
+    services_resolved: bool = False
+    ready: bool = False
 
 async def start_hid(config) -> tuple[HidRuntime, callable]:
     """
@@ -696,32 +669,36 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
         except Exception as e2:
             raise RuntimeError(f"GATT application register failed after retry: {e2}") from e2
 
-    # --- Register + start advertising (with one retry + fresh advert object) ---
-    advert = _make_advert(device_name, appearance)
-    mode = await _adv_register_and_start(bus, advert)
-    if mode in ("error", "noop"):
-        logger.warning("[hid] advert register/start failed (%s) — retrying after power-cycle", mode)
+    runtime = HidRuntime(bus=bus, adapter=adapter, adapter_name=adapter_name, hid=hid, tasks=[])
 
+    # --- Register advertising (with one retry + fresh advert object) ---
+    await _cleanup_stale_adverts(bus, adapter_name)
+    try:
+        await _adv_register(runtime, config)
+    except Exception as e:
+        logger.warning("[hid] advert register failed: %s — retrying after power-cycle", e)
         with contextlib.suppress(Exception):
-            await _adv_unregister(bus, advert)
+            await _adv_unregister(runtime)
 
         await _power_cycle_adapter()
         await adapter.set_alias(device_name)
+        runtime.advert = None
+        runtime.advert_path = None
 
-        # Fresh advert object (fresh DBus path)
-        advert = _make_advert(device_name, appearance)
-        mode = await _adv_register_and_start(bus, advert)
-        if mode in ("error", "noop"):
+        try:
+            await _adv_register(runtime, config)
+        except Exception as e2:
             with contextlib.suppress(Exception):
                 await app.unregister()
-            raise RuntimeError(f"Advertising register failed after retry: mode={mode}")
+            raise RuntimeError(f"Advertising register failed after retry: {e2}") from e2
 
     logger.info("[hid] advertising registered as %s on %s", device_name, adapter_name)
 
     # Watcher / startup sanity
     try:
-        link_task = asyncio.create_task(watch_link(bus, adapter_name, advert, hid))
+        link_task = asyncio.create_task(watch_link(runtime, config))
         tasks = [link_task]
+        runtime.tasks = tasks
         # Make sure we start from a clean HID state (harmless on first boot)
         with contextlib.suppress(Exception):
             hid.release_all()
@@ -729,7 +706,7 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
         # If anything fails after we registered the app/advertisement, clean up so we
         # don't leak advertisements (which leads to 'Maximum advertisements reached').
         with contextlib.suppress(Exception):
-            await _adv_unregister(bus, advert)
+            await _adv_unregister(runtime)
         with contextlib.suppress(Exception):
             await app.unregister()
         with contextlib.suppress(Exception):
@@ -743,7 +720,7 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
             await asyncio.gather(*tasks, return_exceptions=True)
 
         with contextlib.suppress(Exception):
-            await _adv_unregister(bus, advert)
+            await _adv_unregister(runtime)
 
         with contextlib.suppress(Exception):
             await app.unregister()
@@ -753,5 +730,4 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
 
         hid._link_ready = False
 
-    runtime = HidRuntime(bus=bus, adapter=adapter, advert=advert, hid=hid, tasks=tasks)
     return runtime, shutdown
