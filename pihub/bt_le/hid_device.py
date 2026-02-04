@@ -447,32 +447,21 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
             # Wait for “ready” state: services resolved + bonded + CCCD writes.
             await wait_until_services_resolved(bus, dev_path, timeout_s=20.0)
             await wait_until_bonded(bus, dev_path, timeout_s=20.0)
-            await wait_for_any_connection(hid, timeout=20.0)
+            await wait_for_any_connection(hid, timeout_s=20.0)
             log.info("[hid] ready (services+bond+cccd).")
         except Exception as e:
             log.warning("[hid] ready wait failed (will keep running): %s", e)
             _note_failure(hid, where="ready_wait")
 
-        # Once ready and still connected, stop advertising to reduce other devices seeing us.
+        # Once connected, stop advertising so other devices don’t keep seeing us.
         try:
-            objs = await _get_managed_objects(bus)
-            if objs.get(dev_path, {}).get('org.bluez.Device1', {}).get('Connected', False):
+            if runtime.connected:
                 await _stop_advertising_if_running()
-                log.info("[hid] link active; waiting for disconnect…")
-                try:
-                    runtime.connected = True
-            # Once we have an active link, stop advertising so other centrals don't see us.
-            if runtime.advertising:
-                await _adv_unregister_safely(bus, adapter_name, advert)
-                runtime.advertising = False
-                _advertising_state = False
-                logger.info("[hid] advertising stopped (connected)")
-                    runtime.peer = dev_path
-                except Exception:
-                    pass
+                log.info('[hid] advertising stopped (central connected)')
         except Exception as e:
-            log.warning("[hid] failed to stop advertising: %s", e)
+            log.warning('[hid] failed to stop advertising: %s', e)
 
+        log.info('[hid] link active; waiting for disconnect…')
         # Wait until the central disconnects.
         await _wait_until_disconnected(dev_path)
         log.info("[hid] disconnected: %s%s", dev_path, f" ({addr})" if addr else "")
