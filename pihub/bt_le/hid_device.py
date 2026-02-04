@@ -461,7 +461,13 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
                 log.info("[hid] link active; waiting for disconnect…")
                 try:
                     runtime.connected = True
-                    runtime.peer = device_path
+            # Once we have an active link, stop advertising so other centrals don't see us.
+            if runtime.advertising:
+                await _adv_unregister_safely(bus, adapter_name, advert)
+                runtime.advertising = False
+                _advertising_state = False
+                logger.info("[hid] advertising stopped (connected)")
+                    runtime.peer = dev_path
                 except Exception:
                     pass
         except Exception as e:
