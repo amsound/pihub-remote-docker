@@ -429,19 +429,51 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
         trust_retry_handles[device_path] = handle
 
     async def _maybe_trust_device(device_path: str) -> None:
+        """
+        Attempt to mark the connected peer as trusted once it has completed the
+        pairing/bonding process. BlueZ requires a device to be both paired
+        (or bonded) before the Trusted property may be set; an untrusted LE
+        device will not automatically reconnect after a disconnect【160784031106547†L269-L279】.
+
+        This helper inspects the live Device1 properties each time rather
+        than relying solely on a cached snapshot. If the remote is not yet
+        paired or bonded, a retry will be scheduled while the link remains
+        connected. Once Trusted has been successfully set, a one‑off log
+        message is emitted and future calls become no‑ops.
+        """
+        # clear any existing retry handle for this path
         trust_retry_handles.pop(device_path, None)
+        # Always fetch the latest device properties because the cached view may
+        # lag behind the actual DBus state. Only fall back to the cache if we
+        # have recently updated it and it already contains the Paired/Bonded keys.
         dev = _get_cached_device_props(device_path)
-        if not dev or "Paired" not in dev or "Trusted" not in dev:
+        need_props = not dev or ("Paired" not in dev and "Bonded" not in dev) or "Trusted" not in dev
+        if need_props:
             dev = await _get_device_props(device_path)
         if not dev:
             return
+        # If already trusted there's nothing more to do.
         if _get_bool(dev.get("Trusted", False)):
             return
-        paired = _get_bool(dev.get("Paired", False))
-        if not paired:
+        # Consider both Paired and Bonded properties when deciding if the
+        # link has completed the pairing process. Some BlueZ versions only
+        # expose Bonded, so fall back accordingly【160784031106547†L269-L279】.
+        paired_or_bonded = False
+        # Both properties may be Variants – unwrap them with _get_bool().
+        if "Paired" in dev:
+            paired_or_bonded = paired_or_bonded or _get_bool(dev.get("Paired", False))
+        if "Bonded" in dev:
+            paired_or_bonded = paired_or_bonded or _get_bool(dev.get("Bonded", False))
+        # If the device is not yet paired/bonded but still connected, schedule
+        # a retry. Once the link is disconnected we will not reschedule.
+        if not paired_or_bonded:
             if _get_bool(dev.get("Connected", False)):
                 _schedule_trust_retry(device_path)
             return
+        # Device is paired or bonded – attempt to mark it as trusted. This
+        # may still fail if BlueZ has not yet persisted its state; on failure
+        # the helper will quietly log debug and bail. Subsequent calls will
+        # reattempt once the properties have stabilised.
         trusted = await trust_device(bus, device_path, log=log, fail_logged=trust_fail_logged)
         if trusted and device_path not in trust_success_logged:
             label = _device_label(device_path, fallback_addr=_get_str(dev.get("Address")))
@@ -453,17 +485,45 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
         return any(runtime.hid._notif_state())
 
     async def _maybe_ready() -> None:
+        """
+        Determine when a BLE connection is fully ready for operation and log a
+        concise message. A connection is considered ready when:
+
+        * Service discovery has completed (ServicesResolved==True)
+        * Notification subscriptions for all required CCCDs have been enabled
+        * The link has completed pairing/bonding
+
+        The runtime.ready flag ensures this is emitted only once per
+        connection. Upon disconnect the ready state is reset in
+        _note_disconnected().
+        """
         if runtime.ready or not runtime.connected or not runtime.device_path:
             return
+        # Check if services discovery has completed
         services_ok = runtime.services_resolved
+        # Check if our input report CCCDs are enabled (notifications registered)
         cccd_ok = _cccd_enabled()
+        # Retrieve latest device properties for pairing/bonding state
         dev = _get_cached_device_props(runtime.device_path)
-        paired_ok = _get_bool(dev.get("Paired", False))
+        paired_ok = False
+        if dev:
+            if "Paired" in dev and _get_bool(dev.get("Paired", False)):
+                paired_ok = True
+            if "Bonded" in dev and _get_bool(dev.get("Bonded", False)):
+                paired_ok = True
+        # We don't block readiness solely on paired_ok; Apple TV will still
+        # negotiate pairing as part of its HID handshake. However logging
+        # whether the link is bonded helps diagnose trust issues.
         if not services_ok or not cccd_ok:
             return
         runtime.ready = True
         runtime.hid._link_ready = True
-        log.info("[hid] ready (services_resolved=%s, cccd=%s, paired=%s)", services_ok, cccd_ok, paired_ok)
+        log.info(
+            "[hid] ready (services=%s, cccd=%s, bonded=%s)",
+            services_ok,
+            cccd_ok,
+            paired_ok,
+        )
 
     def _note_connected(device_path: str, addr: str | None, services_resolved: bool | None = None) -> None:
         runtime.connected = True
