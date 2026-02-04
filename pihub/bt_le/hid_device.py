@@ -156,6 +156,15 @@ async def _adv_unregister(bus, advert) -> bool:
                 # Treat common “already gone” / “not permitted” cases as non-fatal
                 logger.warning("[hid] adv unregister error: %r", e)
 
+        # Fallback: call LEAdvertisingManager1.UnregisterAdvertisement directly if the helper didn't
+        # (some advert helper classes only remove local objects, not the BlueZ registration).
+        if attempted and hasattr(advert, "path"):
+            try:
+                mgr = await _get_adv_manager(bus, adapter_name)
+                await mgr.call_unregister_advertisement(getattr(advert, "path"))
+            except Exception:
+                pass
+
         return attempted
 
     except Exception as e:
@@ -436,7 +445,7 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
 
         try:
             # Wait for “ready” state: services resolved + bonded + CCCD writes.
-            await wait_until_services_resolved(bus, dev_path, timeout=20.0)
+            await wait_until_services_resolved(bus, dev_path, timeout_s=20.0)
             await wait_until_bonded(bus, dev_path, timeout=20.0)
             await wait_for_any_connection(hid, timeout=20.0)
             log.info("[hid] ready (services+bond+cccd).")
