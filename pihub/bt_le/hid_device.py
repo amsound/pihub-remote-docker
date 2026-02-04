@@ -392,7 +392,7 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
             return
         runtime.ready = True
         runtime.hid._link_ready = True
-        log.debug("[hid] ready (services+cccd).")
+        log.info("[hid] ready (services+cccd).")
 
     def _note_connected(device_path: str, addr: str | None, services_resolved: bool | None = None) -> None:
         runtime.connected = True
