@@ -213,6 +213,12 @@ async def _adv_register_and_start(bus, advert) -> str:
 def _get_bool(v):  # unwrap dbus_next.Variant or use raw bool
     return bool(v.value) if isinstance(v, Variant) else bool(v)
 
+def _get_str(v):  # unwrap dbus_next.Variant or use raw str
+    if v is None:
+        return ""
+    return str(v.value) if isinstance(v, Variant) else str(v)
+
+
 def _set_advertising_state(active: bool) -> None:
     global _advertising_state
     _advertising_state = bool(active)
