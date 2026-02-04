@@ -446,7 +446,7 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
         try:
             # Wait for “ready” state: services resolved + bonded + CCCD writes.
             await wait_until_services_resolved(bus, dev_path, timeout_s=20.0)
-            await wait_until_bonded(bus, dev_path, timeout=20.0)
+            await wait_until_bonded(bus, dev_path, timeout_s=20.0)
             await wait_for_any_connection(hid, timeout=20.0)
             log.info("[hid] ready (services+bond+cccd).")
         except Exception as e:
