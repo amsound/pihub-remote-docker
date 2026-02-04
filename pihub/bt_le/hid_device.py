@@ -108,6 +108,21 @@ REPORT_MAP = bytes([
     0xC0,
 ])
     
+
+async def _cleanup_stale_adverts(bus, adapter_name: str, base_path: str = "/com/spacecheese/bluez_peripheral/advert", max_ids: int = 8) -> None:
+    """Best-effort cleanup for advertisements that can be left registered if we crashed mid-startup."""
+    from contextlib import suppress
+
+    try:
+        mgr = await _get_adv_manager(bus, adapter_name)
+    except Exception:
+        return
+
+    for i in range(max_ids):
+        path = f"{base_path}{i}"
+        with suppress(Exception):
+            await mgr.call_unregister_advertisement(path)
+
 async def _adv_unregister(bus, advert) -> bool:
     """
     Unregister/stop advertising. Idempotent + hardened.
@@ -698,7 +713,7 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
         # If anything fails after we registered the app/advertisement, clean up so we
         # don't leak advertisements (which leads to 'Maximum advertisements reached').
         with contextlib.suppress(Exception):
-            await _adv_unregister(adv_mgr, advert)
+            await _adv_unregister(bus, advert)
         with contextlib.suppress(Exception):
             await app.unregister()
         with contextlib.suppress(Exception):
