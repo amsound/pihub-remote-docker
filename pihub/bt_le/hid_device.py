@@ -123,69 +123,43 @@ async def _cleanup_stale_adverts(bus, adapter_name: str, base_path: str = "/com/
         with suppress(Exception):
             await mgr.call_unregister_advertisement(path)
 
-async def _adv_unregister(bus, advert) -> bool:
+async def _get_adv_manager(bus, adapter_name: str):
+    """Return LEAdvertisingManager1 proxy for the given adapter."""
+    obj = await bus.introspect("org.bluez", f"/org/bluez/{adapter_name}")
+    proxy = bus.get_proxy_object("org.bluez", f"/org/bluez/{adapter_name}", obj)
+    return proxy.get_interface("org.bluez.LEAdvertisingManager1")
+
+
+async def _adv_unregister(bus, *args):
+    """Unregister a previously-registered advertisement.
+
+    Backwards compatible with older call sites:
+      - _adv_unregister(bus, advert)
+      - _adv_unregister(bus, adapter_name, advert_or_path)
+
+    Where advert_or_path is either:
+      - an Advertisement instance with .path, or
+      - an object-path string like '/org/bluez/...'
     """
-    Unregister/stop advertising. Idempotent + hardened.
-    Returns True if we attempted something.
-    """
-    attempted = False
-    # reflect intent immediately so health/logic doesn't lie if unregister errors
-    _set_advertising_state(False)
-    try:
-        if advert is None:
-            return False
+    if len(args) == 1:
+        adapter_name = "hci0"
+        advert_or_path = args[0]
+    elif len(args) == 2:
+        adapter_name, advert_or_path = args
+    else:
+        raise TypeError(f"_adv_unregister expected 2 or 3 positional args (incl bus), got {1+len(args)}")
 
-        # Prefer stop (if available) then unregister; some stacks behave better this way
-        if hasattr(advert, "stop"):
-            attempted = True
-            try:
-                await advert.stop()
-            except Exception:
-                # ignore stop failures; unregister may still work
-                pass
+    advert_path = None
+    if isinstance(advert_or_path, str):
+        advert_path = advert_or_path
+    else:
+        advert_path = getattr(advert_or_path, "path", None)
 
-        if hasattr(advert, "unregister"):
-            attempted = True
-            sig = inspect.signature(advert.unregister)
-            try:
-                if "bus" in sig.parameters:
-                    await advert.unregister(bus)
-                else:
-                    await advert.unregister()
-            except Exception as e:
-                # Treat common “already gone” / “not permitted” cases as non-fatal
-                logger.warning("[hid] adv unregister error: %r", e)
+    if not advert_path:
+        raise ValueError("No advertisement object path available to unregister")
 
-        # Fallback: call LEAdvertisingManager1.UnregisterAdvertisement directly if the helper didn't
-        # (some advert helper classes only remove local objects, not the BlueZ registration).
-        if attempted and hasattr(advert, "path"):
-            try:
-                mgr = await _get_adv_manager(bus, adapter_name)
-                await mgr.call_unregister_advertisement(getattr(advert, "path"))
-            except Exception:
-                pass
-
-        return attempted
-
-    except Exception as e:
-        logger.warning("[hid] adv unregister error: %r", e)
-        return attempted
-
-def _make_advert(device_name: str, appearance: int):
-    """
-    Create a fresh Advertisement object with sane defaults for Apple TV:
-    - connectable
-    - general discoverable (via adv flags in the advert implementation)
-    - runs indefinitely while idle (duration=0)
-    """
-    return Advertisement(
-        localName=device_name,
-        serviceUUIDs=["1812", "180F", "180A"],
-        appearance=appearance,
-        timeout=0,     # keep as your lib expects
-        duration=0,    # IMPORTANT: do NOT auto-stop after 2 seconds
-        discoverable=True,
-    )
+    mgr = await _get_adv_manager(bus, adapter_name)
+    await mgr.call_unregister_advertisement(advert_path)
 
 async def _adv_register_and_start(bus, advert) -> str:
     """
