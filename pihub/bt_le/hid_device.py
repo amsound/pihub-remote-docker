@@ -234,6 +234,20 @@ def _set_advertising_state(active: bool) -> None:
 def advertising_active() -> bool:
     return _advertising_state
 
+
+_connected_state = {"connected": False, "device_path": None, "address": None}
+
+def _set_connected(connected: bool, device_path: str | None = None, address: str | None = None) -> None:
+    _connected_state["connected"] = bool(connected)
+    _connected_state["device_path"] = device_path if connected else None
+    _connected_state["address"] = address if connected else None
+
+def connected_active() -> bool:
+    return bool(_connected_state.get("connected"))
+
+def connected_address() -> str | None:
+    return _connected_state.get("address")
+
 async def trust_device(bus, device_path):
     """Set org.bluez.Device1.Trusted = True for the connected peer."""
     try:
@@ -398,10 +412,6 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
         try:
             await _adv_register_and_start(bus, adapter_name, advert)
             log.info("[hid] advertising registered as %s on %s", hid.device_name, adapter_name)
-            try:
-                runtime.advertising = True
-            except Exception:
-                pass
         except Exception as e:
             msg = str(e)
             if "Maximum advertisements reached" in msg:
@@ -415,7 +425,7 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
         if not advertising_active():
             return
         await _adv_unregister_safely(bus, adapter_name, getattr(advert, "path", None))
-        log.info("[hid] advertising stopped (connected)")
+        # advertising stopped
 
     while True:
         try:
@@ -441,7 +451,12 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
                 await asyncio.sleep(0.5)
 
         addr = dev_props.get('Address')
+        try:
+            addr = addr.value  # dbus_fast Variant
+        except Exception:
+            pass
         log.info("[hid] connected: %s%s", dev_path, f" ({addr})" if addr else "")
+        _set_connected(True, dev_path, str(addr) if addr else None)
 
         try:
             # Wait for “ready” state: services resolved + bonded + CCCD writes.
@@ -455,7 +470,7 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
 
         # Once connected, stop advertising so other devices don’t keep seeing us.
         try:
-            if runtime.connected:
+            if advertising_active():
                 await _stop_advertising_if_running()
                 log.info('[hid] advertising stopped (central connected)')
         except Exception as e:
@@ -465,14 +480,11 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
         # Wait until the central disconnects.
         await _wait_until_disconnected(dev_path)
         log.info("[hid] disconnected: %s%s", dev_path, f" ({addr})" if addr else "")
-        try:
-            runtime.connected = False
-            runtime.peer = None
-        except Exception:
-            pass
+        _set_connected(False)
 
         # Resume advertising for reconnects.
         await asyncio.sleep(0.5)
+        await _ensure_advertising()
 
 class BatteryService(Service):
     def __init__(self, initial_level: int = 100):
