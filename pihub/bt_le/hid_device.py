@@ -131,7 +131,6 @@ async def _adv_unregister(bus, advert) -> bool:
     attempted = False
     # reflect intent immediately so health/logic doesn't lie if unregister errors
     _set_advertising_state(False)
-
     try:
         if advert is None:
             return False
@@ -385,12 +384,15 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
 
     async def _ensure_advertising():
         # Try not to spam RegisterAdvertisement; only register if we have none.
-        if advertising_active(bus, adapter_name):
+        if advertising_active():
             return True
         try:
             await _adv_register_and_start(bus, adapter_name, advert)
             log.info("[hid] advertising registered as %s on %s", hid.device_name, adapter_name)
-            return True
+            try:
+                runtime.advertising = True
+            except Exception:
+                pass
         except Exception as e:
             msg = str(e)
             if "Maximum advertisements reached" in msg:
@@ -401,7 +403,7 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
             return False
 
     async def _stop_advertising_if_running():
-        if not advertising_active(bus, adapter_name):
+        if not advertising_active():
             return
         await _adv_unregister_safely(bus, adapter_name, getattr(advert, "path", None))
         log.info("[hid] advertising stopped (connected)")
@@ -448,12 +450,22 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
             if objs.get(dev_path, {}).get('org.bluez.Device1', {}).get('Connected', False):
                 await _stop_advertising_if_running()
                 log.info("[hid] link active; waiting for disconnect…")
+                try:
+                    runtime.connected = True
+                    runtime.peer = device_path
+                except Exception:
+                    pass
         except Exception as e:
             log.warning("[hid] failed to stop advertising: %s", e)
 
         # Wait until the central disconnects.
         await _wait_until_disconnected(dev_path)
         log.info("[hid] disconnected: %s%s", dev_path, f" ({addr})" if addr else "")
+        try:
+            runtime.connected = False
+            runtime.peer = None
+        except Exception:
+            pass
 
         # Resume advertising for reconnects.
         await asyncio.sleep(0.5)
