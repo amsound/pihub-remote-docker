@@ -225,12 +225,14 @@ class BTLEController:
 
         runtime = self._tx.runtime
         connected = False
-        if runtime is not None and getattr(runtime, "hid", None) is not None:
-            connected = bool(getattr(runtime.hid, "_link_ready", False))
+        advertising = _hd.advertising_active()
+        if runtime is not None:
+            connected = bool(getattr(runtime, "connected", False))
+            advertising = bool(getattr(runtime, "advertising", advertising))
 
         return {
             "adapter_present": os.path.exists(f"/sys/class/bluetooth/{self._tx._adapter}"),
-            "advertising": _hd.advertising_active(),
+            "advertising": advertising,
             "connected": connected,
         }
 
