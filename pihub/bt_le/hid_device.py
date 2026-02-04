@@ -380,13 +380,16 @@ async def watch_link(bus, adapter_name: str, advert, hid):
         except Exception as e:
             logger.warning("[hid] Baseline ensure failed: %s", e)
 
-        try:
-            if not getattr(advert, "registered", False):
-                await advert.register(bus)
-        except Exception as e:
-            logger.warning("[hid] Advertisement register failed: %s", e)
-            await asyncio.sleep(1.0)
-            continue
+            try:
+                # Avoid double-registering advertisements (can hit BlueZ "Maximum advertisements reached").
+                # We track advertising state via BlueZ ActiveInstances (and our helper), not the advert object's
+                # internal "registered" flag (which may not be maintained by all libraries).
+                if not await _advertising_active(adapter_name):
+                    await _adv_register_and_start(bus, advert, adapter_name)
+            except Exception as e:
+                logger.warning("[hid] Advertisement register failed: %s", e)
+                await asyncio.sleep(1.0)
+                continue
 
         logger.info("[hid] advertising (waiting for central)…")
         dev_path = await wait_for_any_connection(bus, adapter_name, timeout_s=connect_wait_s)
