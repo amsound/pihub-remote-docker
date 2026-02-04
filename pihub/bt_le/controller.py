@@ -293,6 +293,11 @@ class BTLEController:
                 except Exception as exc:
                     self._available = False
                     logger.warning("[bt] transport start failed: %s", exc)
+                    # ``start()`` may have partially succeeded (e.g. registered an
+                    # advertisement) before raising. Always tear down to avoid
+                    # leaking BlueZ advertisement slots across retries.
+                    with contextlib.suppress(Exception):
+                        await self._tx.stop()
                     await self._sleep_with_stop(backoff)
                     backoff = min(backoff * 2.0, 30.0)
                     continue
