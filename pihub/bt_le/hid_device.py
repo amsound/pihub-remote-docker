@@ -205,15 +205,17 @@ def connected_active() -> bool:
 def connected_address() -> str | None:
     return _connected_state.get("address")
 
-async def trust_device(bus, device_path):
+async def trust_device(bus, device_path, *, log=None, fail_logged: set[str] | None = None):
     """Set org.bluez.Device1.Trusted = True for the connected peer."""
     try:
         root_xml = await bus.introspect("org.bluez", device_path)
         dev_obj = bus.get_proxy_object("org.bluez", device_path, root_xml)
         props = dev_obj.get_interface("org.freedesktop.DBus.Properties")
         await props.call_set("org.bluez.Device1", "Trusted", Variant("b", True))
-    except Exception:
-        pass
+    except Exception as exc:
+        if log is not None and fail_logged is not None and device_path not in fail_logged:
+            fail_logged.add(device_path)
+            log.debug("[hid] trust failed for %s: %s", device_path, exc)
         
 async def _get_managed_objects(bus):
     root_xml = await bus.introspect("org.bluez", "/")
@@ -346,6 +348,7 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
     dev_prefix = f"{adapter_path}/dev_"
 
     managed_cache: dict[str, dict] = {}
+    trust_fail_logged: set[str] = set()
 
     async def _refresh_managed_cache() -> dict[str, dict]:
         nonlocal managed_cache
@@ -381,6 +384,17 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
             if _get_bool(dev.get("Connected", False)):
                 connected.add(path)
         return connected
+
+    async def _maybe_trust_device(device_path: str) -> None:
+        dev = _get_cached_device_props(device_path)
+        if not dev:
+            return
+        if _get_bool(dev.get("Trusted", False)):
+            return
+        paired = _get_bool(dev.get("Paired", False)) or _get_bool(dev.get("Bonded", False))
+        if not paired:
+            return
+        await trust_device(bus, device_path, log=log, fail_logged=trust_fail_logged)
 
     def _cccd_enabled() -> bool:
         return any(runtime.hid._notif_state())
@@ -430,6 +444,7 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
             runtime.ready = False
             runtime.hid._link_ready = False
             _note_connected(device_path, addr, services_resolved=services_resolved)
+        asyncio.create_task(_maybe_trust_device(device_path))
         await _sync_advertising()
         await _maybe_ready()
 
