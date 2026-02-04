@@ -408,7 +408,10 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
 
     while True:
         try:
-            await ensure_controller_baseline(bus, adapter_name, allow_pairing=allow_pairing)
+            # ensure_controller_baseline() only manages adapter baseline (powered, alias,
+            # discoverable/bondable, etc). Pairing policy is handled by the agent + our
+            # own flow, so don't pass allow_pairing here.
+            await ensure_controller_baseline(bus, adapter_name)
         except Exception as e:
             log.warning("[hid] baseline ensure failed: %s", e)
 
