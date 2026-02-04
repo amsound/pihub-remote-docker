@@ -242,9 +242,9 @@ async def wait_for_any_connection(
             dev = ifaces.get("org.bluez.Device1")
             if not dev:
                 continue
-            if dev.get("Adapter") != adapter_path:
+            if _get_str(dev.get("Adapter")) != adapter_path:
                 continue
-            if bool(dev.get("Connected", False)):
+            if _get_bool(dev.get("Connected", False)):
                 return path
 
         if deadline is not None and time.monotonic() >= deadline:
