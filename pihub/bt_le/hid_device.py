@@ -347,112 +347,114 @@ async def wait_until_bonded(
             return True
         await asyncio.sleep(0.2)
     return False
-async def watch_link(bus, adapter_name: str, advert, hid):
-    """Supervise advertising + incoming connections for this HID-over-GATT peripheral."""
-    fail_window_s = 120.0
-    fail_threshold = 3
-    fail_count = 0
-    fail_window_start = 0.0
 
-    connect_wait_s = 180.0
-    ready_deadline_s = 120.0
-    cccd_grace_s = 90.0
+async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool = True):
+    """Robust advertise/connect/reconnect loop for the HID peripheral.
 
-    async def _note_failure(reason: str):
-        nonlocal fail_count, fail_window_start
-        now = time.monotonic()
-        if fail_window_start == 0.0 or (now - fail_window_start) > fail_window_s:
-            fail_window_start = now
-            fail_count = 0
-        fail_count += 1
-        logger.warning("[hid] Link failure (%s). failures=%d/%d", reason, fail_count, fail_threshold)
+    Key behaviors:
+      - Ensure the adapter stays in a sane baseline (LE mode, powered, discoverable/pairable as required)
+      - Ensure exactly one advertisement is active while waiting for a central
+      - Once a central is connected AND ready (services resolved + bonded + CCCD), stop advertising
+        so other devices stop seeing the peripheral.
+      - On disconnect, restart advertising and repeat.
+    """
+    log = logger
 
-        if fail_count >= fail_threshold:
-            logger.warning("[hid] Too many failures; power-cycling adapter and re-baselining.")
-            try:
-                await _power_cycle_adapter(bus, adapter_name)
-            except Exception as e:
-                logger.warning("[hid] Adapter power-cycle failed: %s", e)
-            try:
-                await ensure_controller_baseline(bus, adapter_name)
-            except Exception as e:
-                logger.warning("[hid] Baseline after power-cycle failed: %s", e)
-            fail_window_start = time.monotonic()
-            fail_count = 0
+    async def _wait_until_disconnected(dev_path: str, *, poll_s: float = 0.5):
+        # Poll via GetManagedObjects to avoid relying on signal delivery.
+        while True:
+            objs = await _get_managed_objects(bus)
+            props = objs.get(dev_path, {}).get('org.bluez.Device1', {})
+            if not props:
+                return
+            if not props.get('Connected', False):
+                return
+            await asyncio.sleep(poll_s)
+
+    async def _pick_connected_device():
+        objs = await _get_managed_objects(bus)
+        for path, ifaces in objs.items():
+            if not path.startswith(f'/org/bluez/{adapter_name}/dev_'):
+                continue
+            dev = ifaces.get('org.bluez.Device1')
+            if not dev:
+                continue
+            if dev.get('Connected', False):
+                return path, dev
+        return None, None
+
+    async def _ensure_advertising():
+        # Try not to spam RegisterAdvertisement; only register if we have none.
+        if advertising_active(bus, adapter_name):
+            return True
+        try:
+            await _adv_register_and_start(bus, adapter_name, advert)
+            log.info("[hid] advertising registered as %s on %s", hid.device_name, adapter_name)
+            return True
+        except Exception as e:
+            msg = str(e)
+            if "Maximum advertisements reached" in msg:
+                log.warning("[hid] Advertisement register failed: Maximum advertisements reached")
+                await _adv_unreg_all_known(bus, adapter_name)
+            else:
+                log.warning("[hid] Advertisement register failed: %s", e)
+            return False
+
+    async def _stop_advertising_if_running():
+        if not advertising_active(bus, adapter_name):
+            return
+        await _adv_unregister_safely(bus, adapter_name, getattr(advert, "path", None))
+        log.info("[hid] advertising stopped (connected)")
 
     while True:
         try:
-            await ensure_controller_baseline(bus, adapter_name)
+            await ensure_controller_baseline(bus, adapter_name, allow_pairing=allow_pairing)
         except Exception as e:
-            logger.warning("[hid] Baseline ensure failed: %s", e)
+            log.warning("[hid] baseline ensure failed: %s", e)
 
-            try:
-                # Avoid double-registering advertisements (can hit BlueZ "Maximum advertisements reached").
-                # We track advertising state via BlueZ ActiveInstances (and our helper), not the advert object's
-                # internal "registered" flag (which may not be maintained by all libraries).
-                if not await _advertising_active(adapter_name):
-                    await _adv_register_and_start(bus, advert, adapter_name)
-            except Exception as e:
-                logger.warning("[hid] Advertisement register failed: %s", e)
-                await asyncio.sleep(1.0)
-                continue
-
-        logger.info("[hid] advertising (waiting for central)…")
-        dev_path = await wait_for_any_connection(bus, adapter_name, timeout_s=connect_wait_s)
-        if not dev_path:
+        ok = await _ensure_advertising()
+        if not ok:
+            await asyncio.sleep(2.0)
             continue
 
-        logger.info("[hid] connected: %s", dev_path)
+        log.info("[hid] advertising (waiting for central)…")
 
-        ready_deadline = time.monotonic() + ready_deadline_s
-        have_services = False
-        have_bond = False
-        have_cccd = False
+        # Wait for first connection.
+        dev_path, dev_props = None, None
+        while dev_path is None:
+            dev_path, dev_props = await _pick_connected_device()
+            if dev_path is None:
+                await asyncio.sleep(0.5)
 
-        while time.monotonic() < ready_deadline:
-            managed = await _get_managed_objects(bus)
-            dev = managed.get(dev_path, {}).get("org.bluez.Device1")
-            if not dev or not bool(dev.get("Connected", False)):
-                await _note_failure("disconnected during setup")
-                break
+        addr = dev_props.get('Address')
+        log.info("[hid] connected: %s%s", dev_path, f" ({addr})" if addr else "")
 
-            if not have_services:
-                have_services = await wait_until_services_resolved(bus, dev_path, timeout_s=0.5)
+        try:
+            # Wait for “ready” state: services resolved + bonded + CCCD writes.
+            await wait_until_services_resolved(bus, dev_path, timeout=20.0)
+            await wait_until_bonded(bus, dev_path, timeout=20.0)
+            await wait_for_any_connection(hid, timeout=20.0)
+            log.info("[hid] ready (services+bond+cccd).")
+        except Exception as e:
+            log.warning("[hid] ready wait failed (will keep running): %s", e)
+            _note_failure(hid, where="ready_wait")
 
-            if not have_bond:
-                have_bond = await wait_until_bonded(bus, dev_path, timeout_s=0.5)
+        # Once ready and still connected, stop advertising to reduce other devices seeing us.
+        try:
+            objs = await _get_managed_objects(bus)
+            if objs.get(dev_path, {}).get('org.bluez.Device1', {}).get('Connected', False):
+                await _stop_advertising_if_running()
+                log.info("[hid] link active; waiting for disconnect…")
+        except Exception as e:
+            log.warning("[hid] failed to stop advertising: %s", e)
 
-            have_cccd = bool(getattr(hid, "_notif_state", {}))
+        # Wait until the central disconnects.
+        await _wait_until_disconnected(dev_path)
+        log.info("[hid] disconnected: %s%s", dev_path, f" ({addr})" if addr else "")
 
-            if have_services and have_bond and have_cccd:
-                logger.info("[hid] ready (services+bond+cccd).")
-                break
-
-            if have_services and have_bond and not have_cccd:
-                if (ready_deadline - time.monotonic()) < cccd_grace_s:
-                    ready_deadline = time.monotonic() + cccd_grace_s
-
-            await asyncio.sleep(0.2)
-        else:
-            await _note_failure("setup timeout")
-
-        managed = await _get_managed_objects(bus)
-        dev = managed.get(dev_path, {}).get("org.bluez.Device1", {})
-        if not bool(dev.get("Connected", False)):
-            await asyncio.sleep(0.5)
-            continue
-
-        if have_bond:
-            try:
-                if getattr(advert, "registered", False):
-                    await advert.unregister(bus)
-            except Exception as e:
-                logger.warning("[hid] Advertisement unregister failed: %s", e)
-
-        logger.info("[hid] link active; waiting for disconnect…")
-        await wait_until_disconnected(bus, dev_path)
-        logger.info("[hid] disconnected; restarting advertising loop")
+        # Resume advertising for reconnects.
         await asyncio.sleep(0.5)
+
 class BatteryService(Service):
     def __init__(self, initial_level: int = 100):
         super().__init__("180F", True)
