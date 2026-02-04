@@ -424,7 +424,7 @@ async def watch_link(bus, adapter_name: str, advert, hid, *, allow_pairing: bool
     async def _stop_advertising_if_running():
         if not advertising_active():
             return
-        await _adv_unregister_safely(bus, adapter_name, getattr(advert, "path", None))
+        await _adv_unregister(bus, adapter_name, getattr(advert, "path", None))
         # advertising stopped
 
     while True:
