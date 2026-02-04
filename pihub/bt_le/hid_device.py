@@ -349,14 +349,36 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
 
     managed_cache: dict[str, dict] = {}
     trust_fail_logged: set[str] = set()
+    cached_fields = ("Address", "Alias", "Name")
 
     async def _refresh_managed_cache() -> dict[str, dict]:
         nonlocal managed_cache
         managed_cache = await _get_managed_objects(bus)
+        for path, ifaces in managed_cache.items():
+            dev = ifaces.get("org.bluez.Device1")
+            if not dev:
+                continue
+            for key in cached_fields:
+                if key in dev:
+                    dev[key] = _get_str(dev[key])
         return managed_cache
 
     def _get_cached_device_props(device_path: str) -> dict:
         return managed_cache.get(device_path, {}).get("org.bluez.Device1", {})
+
+    def _update_device_cache(device_path: str, props: dict) -> None:
+        if device_path not in managed_cache:
+            managed_cache[device_path] = {"org.bluez.Device1": {}}
+        dev = managed_cache[device_path].setdefault("org.bluez.Device1", {})
+        for key, value in props.items():
+            dev[key] = _get_str(value) if key in cached_fields else value
+
+    def _device_label(device_path: str, *, fallback_addr: str | None = None) -> str:
+        cached = _get_cached_device_props(device_path)
+        alias = _get_str(cached.get("Alias"))
+        name = _get_str(cached.get("Name"))
+        addr = _get_str(cached.get("Address")) or (fallback_addr or "")
+        return alias or name or addr or "unknown"
 
     async def _get_device_address(device_path: str) -> str:
         cached = _get_cached_device_props(device_path)
@@ -437,9 +459,10 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
 
     async def _handle_connected(device_path: str, *, services_resolved: bool | None = None) -> None:
         addr = await _get_device_address(device_path) or "unknown"
+        label = _device_label(device_path, fallback_addr=addr)
         if device_path not in runtime.connected_devices:
             runtime.connected_devices.add(device_path)
-            log.info("[hid] connected %s", addr)
+            log.info("[hid] connected %s", label)
         if not runtime.device_path:
             runtime.ready = False
             runtime.hid._link_ready = False
@@ -450,10 +473,11 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
 
     async def _handle_disconnected(device_path: str, *, addr: str | None = None) -> None:
         addr = addr or await _get_device_address(device_path) or "unknown"
+        label = _device_label(device_path, fallback_addr=addr)
         was_connected = device_path in runtime.connected_devices
         if was_connected:
             runtime.connected_devices.discard(device_path)
-            log.info("[hid] disconnected %s", addr)
+            log.info("[hid] disconnected %s", label)
         if runtime.device_path == device_path:
             if runtime.connected_devices:
                 new_path = sorted(runtime.connected_devices)[0]
@@ -491,7 +515,7 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
             runtime.hid._link_ready = False
             _note_connected(path, addr, services_resolved=runtime.services_resolved)
             await _sync_advertising()
-            log.info("[hid] connected %s", addr)
+            log.info("[hid] connected %s", _device_label(path, fallback_addr=addr))
         else:
             _note_disconnected()
             await _sync_advertising()
@@ -538,6 +562,7 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
             if not dev or not path.startswith(dev_prefix):
                 return
             managed_cache[path] = ifaces
+            _update_device_cache(path, dev)
             if _get_bool(dev.get("Connected", False)):
                 loop.create_task(_handle_connected(path, services_resolved=_get_bool(dev.get("ServicesResolved", False))))
             return
@@ -559,9 +584,7 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
         if not msg.path.startswith(dev_prefix):
             return
 
-        if msg.path not in managed_cache:
-            managed_cache[msg.path] = {"org.bluez.Device1": {}}
-        managed_cache[msg.path]["org.bluez.Device1"].update(changed)
+        _update_device_cache(msg.path, changed)
 
         if "Connected" in changed:
             if _get_bool(changed["Connected"]):
