@@ -617,18 +617,39 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
             await asyncio.sleep(0.25)
 
     async def _seed_existing_connection() -> None:
+        """
+        Seed the runtime state with any pre‑existing connection when starting
+        watch_link().  This is called once before any D‑Bus signal handlers
+        have processed events.  If a central is already connected when we
+        register our handlers, BlueZ will not emit a new `PropertiesChanged`
+        event for the `Connected` property, so we need to initialise our
+        internal state and schedule readiness polling ourselves.
+        """
+        nonlocal ready_task
         managed = await _refresh_managed_cache()
         runtime.connected_devices = _connected_devices_from(managed)
         if runtime.connected_devices:
+            # Use the first connected device as our primary link.
             path = sorted(runtime.connected_devices)[0]
             dev = _get_cached_device_props(path)
             addr = _get_str(dev.get("Address")) or await _get_device_address(path) or "unknown"
+            # Capture current ServicesResolved state but reset runtime.ready to
+            # False so that readiness will be evaluated again.
             runtime.services_resolved = _get_bool(dev.get("ServicesResolved", False))
             runtime.ready = False
             runtime.hid._link_ready = False
             _note_connected(path, addr, services_resolved=runtime.services_resolved)
             await _sync_advertising()
             log.info("[hid] connected %s", _device_label(path, fallback_addr=addr))
+            # Since BlueZ won't send us a `Connected` signal for an existing
+            # connection, we won't schedule a polling task in the signal
+            # handler.  Kick off the readiness polling here to evaluate
+            # services_resolved, CCCD subscription and bonding status.  If
+            # a ready_task is already running (unlikely at startup) cancel it.
+            if ready_task:
+                ready_task.cancel()
+                ready_task = None
+            ready_task = loop.create_task(_poll_ready())
         else:
             _note_disconnected()
             await _sync_advertising()
