@@ -558,6 +558,16 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
             return
         started = await _adv_register(runtime, cfg)
         if started:
+            # Reassert the adapter baseline each time advertising starts.  On some
+            # platforms toggling Powered or restarting bluetoothd silently resets
+            # Pairable/Discoverable flags and timeouts【208768328097654†L324-L349】.
+            # If we don't restore these settings the Apple TV may not see the
+            # peripheral until PiHub is manually restarted.  Failure to set the
+            # baseline is non‑fatal, so we ignore exceptions.
+            try:
+                await ensure_controller_baseline(runtime.bus, runtime.adapter_name)
+            except Exception:
+                pass
             log.info("[hid] advertising resumed")
 
     async def _handle_connected(device_path: str, *, services_resolved: bool | None = None) -> None:
@@ -651,6 +661,17 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
                     runtime.ready = False
                     runtime.hid._link_ready = False
                     _note_connected(path, addr, services_resolved=runtime.services_resolved)
+            # If no devices are currently connected then periodically re‑apply the
+            # controller baseline.  BlueZ clears Pairable/Discoverable settings
+            # after a bluetoothd restart or power cycle, which prevents the
+            # peripheral from showing up in scans until they are restored【208768328097654†L324-L349】.
+            # Doing this in the reconcile loop avoids having to restart PiHub
+            # whenever the adapter is toggled via bluetoothctl.
+            if not runtime.connected_devices:
+                try:
+                    await ensure_controller_baseline(bus, adapter_name)
+                except Exception:
+                    pass
             await asyncio.sleep(5.0)
 
     def handler(msg):
