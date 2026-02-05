@@ -477,8 +477,16 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
         trusted = await trust_device(bus, device_path, log=log, fail_logged=trust_fail_logged)
         if trusted and device_path not in trust_success_logged:
             label = _device_label(device_path, fallback_addr=_get_str(dev.get("Address")))
-            addr = _get_str(dev.get("Address")) or await _get_device_address(device_path) or "unknown"
-            log.info("[hid] trusted %s (%s)", label, addr)
+            # Simplify the trusted log message: use the same label format as the
+            # connected message.  If the resolved label and address are the same
+            # value (e.g. when there is no alias), we avoid printing the address
+            # twice.  See _device_label() for ordering of alias/name/address.
+            if label:
+                log.info("[hid] trusted %s", label)
+            else:
+                # fall back to the MAC address when label is blank
+                addr = _get_str(dev.get("Address")) or await _get_device_address(device_path) or "unknown"
+                log.info("[hid] trusted %s", addr)
             trust_success_logged.add(device_path)
 
     def _cccd_enabled() -> bool:
@@ -984,7 +992,13 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
             raise RuntimeError(f"Advertising register failed after retry: {e2}") from e2
 
     if started:
-        logger.info("[hid] advertising started %s", runtime.advert_path)
+        # Don't leak the internal advertisement path in the default info log.  The
+        # path is useful for debugging but can look odd in normal output.  If
+        # debug logging is enabled, include the full path; otherwise emit a
+        # concise message.  This mirrors how we log other lifecycle events.
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("[hid] advertising started %s", runtime.advert_path)
+        logger.info("[hid] advertising started")
 
     # Watcher / startup sanity
     try:
