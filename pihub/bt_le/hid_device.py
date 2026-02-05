@@ -507,8 +507,23 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
         """
         if runtime.ready or not runtime.connected or not runtime.device_path:
             return
-        # Check if services discovery has completed
+        # Check if services discovery has completed.  After a bluetoothd
+        # restart the ServicesResolved flag can be reset back to False and
+        # BlueZ may not emit a new PropertiesChanged signal.  Poll the
+        # property once here if we have not yet marked it as resolved.  This
+        # avoids missing readiness when resuming an existing connection.
         services_ok = runtime.services_resolved
+        if not services_ok and runtime.connected and runtime.device_path:
+            try:
+                # Poll for up to 2 seconds to allow the adapter to re‑resolve
+                # GATT services.  Update runtime.services_resolved if the
+                # property is set.  A short timeout ensures we don't block
+                # readiness indefinitely on a bad connection.
+                if await wait_until_services_resolved(runtime.bus, runtime.device_path, timeout_s=2.0, poll_interval=0.25):
+                    runtime.services_resolved = True
+                    services_ok = True
+            except Exception:
+                pass
         # Check if our input report CCCDs are enabled (notifications registered)
         cccd_ok = _cccd_enabled()
         # Retrieve latest device properties for pairing/bonding state
