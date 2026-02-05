@@ -1020,20 +1020,36 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
         raise
 
     async def shutdown():
+        """Cleanly tear down the BLE HID service and notify connected peers."""
+        # cancel the watch_link tasks
         for t in list(tasks):
             t.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*tasks, return_exceptions=True)
-
+    
+        # proactively disconnect any connected peers
+        try:
+            for path in list(runtime.connected_devices):
+                try:
+                    xml = await bus.introspect("org.bluez", path)
+                    dev_obj = bus.get_proxy_object("org.bluez", path, xml)
+                    dev_iface = dev_obj.get_interface("org.bluez.Device1")
+                    await dev_iface.call_disconnect()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    
+        # now unregister the advertisement and GATT services
         with contextlib.suppress(Exception):
             await _adv_unregister(runtime)
-
         with contextlib.suppress(Exception):
             await app.unregister()
-
+    
+        # release any active HID reports so no keys are stuck
         with contextlib.suppress(Exception):
             hid.release_all()
-
+    
         hid._link_ready = False
 
     return runtime, shutdown
