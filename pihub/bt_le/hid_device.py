@@ -63,15 +63,6 @@ async def ensure_controller_baseline(bus, adapter_name: str, *, adapter_proxy=No
 
 
 _hid_service_singleton = None  # set inside start_hid()
-
-# Persist the last protocol mode across GATT service restarts.  Some centrals
-# (e.g. tvOS) switch the keyboard into Boot mode once during pairing and
-# expect subsequent Report writes to be sent on the same mode.  BlueZ
-# restarts reset the HIDService._proto to the default Report mode (0x01).
-# Maintain the last negotiated protocol here so that when PiHub restarts the
-# HID service after a bluetoothd bounce, it restores the previous mode.  It is
-# initialised to Report (0x01) and updated in shutdown().
-_last_proto = bytearray([1])
 _advertising_state = False
 
 # --------------------------
@@ -516,19 +507,21 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
         """
         if runtime.ready or not runtime.connected or not runtime.device_path:
             return
-        # Check if services discovery has completed.  After a bluetoothd
-        # restart the ServicesResolved flag can be reset back to False and
-        # BlueZ may not emit a new PropertiesChanged signal.  Poll the
-        # property once here if we have not yet marked it as resolved.  This
-        # avoids missing readiness when resuming an existing connection.
+        # Check if services discovery has completed.  BlueZ may reset
+        # ServicesResolved to False on daemon restarts and not emit a
+        # subsequent PropertiesChanged signal.  If services_ok is False but
+        # the device is still connected, proactively poll until it
+        # becomes True.  This helps recover readiness on stacks that
+        # suppress the ServicesResolved signal after reconnects.
         services_ok = runtime.services_resolved
         if not services_ok and runtime.connected and runtime.device_path:
             try:
-                # Poll for up to 2 seconds to allow the adapter to re‑resolve
-                # GATT services.  Update runtime.services_resolved if the
-                # property is set.  A short timeout ensures we don't block
-                # readiness indefinitely on a bad connection.
-                if await wait_until_services_resolved(runtime.bus, runtime.device_path, timeout_s=2.0, poll_interval=0.25):
+                # Poll for up to two seconds.  This returns True as soon as
+                # BlueZ reports services have been resolved; otherwise
+                # services_ok remains False and readiness will not be set.
+                if await wait_until_services_resolved(
+                    runtime.bus, runtime.device_path, timeout_s=2.0, poll_interval=0.25
+                ):
                     runtime.services_resolved = True
                     services_ok = True
             except Exception:
@@ -683,6 +676,17 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
     reconcile_task = None
 
     async def _reconcile_loop() -> None:
+        """
+        Periodically reconcile the set of connected devices and re‑assert
+        controller baseline settings when idle.  To reduce bus chatter,
+        baseline re‑application is performed no more frequently than once
+        every 30 seconds and only when no devices are connected.
+        """
+        # Track the last time we re‑asserted the controller baseline.  This
+        # reduces redundant writes to BlueZ properties and systemd journal
+        # noise when the adapter remains idle for long periods.
+        last_baseline_time: float = 0.0
+        baseline_interval: float = 30.0  # seconds between baseline updates
         while True:
             managed = await _refresh_managed_cache()
             desired = _connected_devices_from(managed)
@@ -706,17 +710,19 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
                     runtime.ready = False
                     runtime.hid._link_ready = False
                     _note_connected(path, addr, services_resolved=runtime.services_resolved)
-            # If no devices are currently connected then periodically re‑apply the
-            # controller baseline.  BlueZ clears Pairable/Discoverable settings
-            # after a bluetoothd restart or power cycle, which prevents the
-            # peripheral from showing up in scans until they are restored【208768328097654†L324-L349】.
-            # Doing this in the reconcile loop avoids having to restart PiHub
-            # whenever the adapter is toggled via bluetoothctl.
+            # Only re‑assert controller baseline when no devices are connected and
+            # the interval has elapsed.  This prevents sending repeated
+            # Pairable/Discoverable writes when the adapter remains idle but
+            # nothing has changed.
             if not runtime.connected_devices:
-                try:
-                    await ensure_controller_baseline(bus, adapter_name)
-                except Exception:
-                    pass
+                now = time.monotonic()
+                if now - last_baseline_time >= baseline_interval:
+                    try:
+                        await ensure_controller_baseline(bus, adapter_name)
+                    except Exception:
+                        pass
+                    else:
+                        last_baseline_time = now
             await asyncio.sleep(5.0)
 
     def handler(msg):
@@ -989,27 +995,6 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
     await ensure_controller_baseline(bus, adapter_name, adapter_proxy=proxy)
     await adapter.set_alias(device_name)
 
-    # On some platforms repeated bluetoothd restarts leave the adapter in a
-    # half-initialised state where centrals remain logically connected but no
-    # longer resend CCCD subscriptions or HID control point messages.  To
-    # reset the controller completely, power-cycle it at startup.  This
-    # toggles the adapter off and back on, ensuring BlueZ and the controller
-    # reinitialise cleanly.  A short delay between off/on avoids hitting
-    # hardware too quickly.  After power-cycling, reassert the baseline
-    # settings and alias again.  Note: this is a no-op on controllers that
-    # cannot be powered off via DBus.
-    try:
-        await adapter.set_powered(False)
-        await asyncio.sleep(0.4)
-        await adapter.set_powered(True)
-        await asyncio.sleep(0.8)
-    except Exception:
-        pass
-    # Reapply baseline (pairable/discoverable) and alias after a power cycle.
-    await ensure_controller_baseline(bus, adapter_name, adapter_proxy=proxy)
-    with contextlib.suppress(Exception):
-        await adapter.set_alias(device_name)
-
     # Agent
     agent = NoIoAgent()
     await agent.register(bus, default=True)
@@ -1019,14 +1004,6 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
     dis = DeviceInfoService()
     bas = BatteryService(initial_level=100)
     hid = HIDService()
-    # Restore the previous protocol mode (Report vs Boot).  Some centrals
-    # switch to Boot mode during pairing and expect it to persist.  Without
-    # restoring, BlueZ will default to Report mode after a restart which can
-    # cause input reports to be ignored by the host.  See _last_proto above.
-    try:
-        hid._proto[:] = _last_proto
-    except Exception:
-        pass
 
     global _hid_service_singleton
     _hid_service_singleton = hid
@@ -1164,14 +1141,6 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
         # Release any active HID reports so the host sees no stuck keys
         with contextlib.suppress(Exception):
             hid.release_all()
-
-        # Persist the current protocol mode so it can be restored on next
-        # startup.  Use a slice copy to avoid aliasing shared memory.
-        global _last_proto
-        try:
-            _last_proto = bytearray(hid._proto)
-        except Exception:
-            pass
 
         hid._link_ready = False
 
