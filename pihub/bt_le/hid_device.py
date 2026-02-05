@@ -1026,19 +1026,30 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
             t.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*tasks, return_exceptions=True)
-    
-        # Best‑effort disconnect any connected Device1 peers.
+
+        # Best‑effort disconnect any connected Device1 peers.  If we have active
+        # connections when shutting down (e.g. container restart), proactively
+        # request a disconnect so the central (Apple TV) sees the link drop.
         try:
             for path in list(runtime.connected_devices):
                 try:
-                    # Resolve the device’s address for logging
+                    # Log a clean shutdown for each connected device.  Try to
+                    # resolve the alias or name first; fall back to the MAC
+                    # address.  The watch_link-local _device_label helper is
+                    # unavailable here, so we use _get_device_alias_or_name()
+                    # which returns alias or name or empty string.
+                    label = ""
                     try:
-                        label_addr = await _get_device_address(bus, path) or "unknown"
+                        # alias or name may still be available even during shutdown
+                        label = await _get_device_alias_or_name(bus, path) or ""
                     except Exception:
-                        label_addr = "unknown"
-                    # Log that we’re performing a clean shutdown for this peer
-                    logger.info("[hid] disconnected %s (clean shutdown)", label_addr)
-                    # Perform the actual disconnect
+                        label = ""
+                    if not label:
+                        try:
+                            label = await _get_device_address(bus, path) or "unknown"
+                        except Exception:
+                            label = "unknown"
+                    logger.info("[hid] disconnected %s (clean shutdown)", label)
                     xml = await bus.introspect("org.bluez", path)
                     dev_obj = bus.get_proxy_object("org.bluez", path, xml)
                     dev_iface = dev_obj.get_interface("org.bluez.Device1")
@@ -1047,17 +1058,18 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
                     pass
         except Exception:
             pass
-    
-        # now unregister the advertisement and GATT services
+
+        # Unregister advertisement and GATT services.
         with contextlib.suppress(Exception):
             await _adv_unregister(runtime)
+
         with contextlib.suppress(Exception):
             await app.unregister()
-    
-        # release any active HID reports so no keys are stuck
+
+        # Release any active HID reports so the host sees no stuck keys
         with contextlib.suppress(Exception):
             hid.release_all()
-    
+
         hid._link_ready = False
 
     return runtime, shutdown
