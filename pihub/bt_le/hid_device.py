@@ -686,7 +686,13 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
         # reduces redundant writes to BlueZ properties and systemd journal
         # noise when the adapter remains idle for long periods.
         last_baseline_time: float = 0.0
-        baseline_interval: float = 30.0  # seconds between baseline updates
+        baseline_interval: float = 60.0  # seconds between baseline updates
+        # Use a longer sleep interval to reduce bus load.  BlueZ's signal
+        # handlers catch the vast majority of connect/disconnect events,
+        # so reconciliation can run less frequently without missing state
+        # changes.  Increasing this to 15s (from 5s) yields a 3× reduction
+        # in full ObjectManager dumps on idle systems.
+        sleep_interval: float = 15.0
         while True:
             managed = await _refresh_managed_cache()
             desired = _connected_devices_from(managed)
@@ -723,7 +729,7 @@ async def watch_link(runtime, cfg, *, allow_pairing: bool = True):
                         pass
                     else:
                         last_baseline_time = now
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(sleep_interval)
 
     def handler(msg):
         nonlocal ready_task
