@@ -63,6 +63,15 @@ async def ensure_controller_baseline(bus, adapter_name: str, *, adapter_proxy=No
 
 
 _hid_service_singleton = None  # set inside start_hid()
+
+# Persist the last protocol mode across GATT service restarts.  Some centrals
+# (e.g. tvOS) switch the keyboard into Boot mode once during pairing and
+# expect subsequent Report writes to be sent on the same mode.  BlueZ
+# restarts reset the HIDService._proto to the default Report mode (0x01).
+# Maintain the last negotiated protocol here so that when PiHub restarts the
+# HID service after a bluetoothd bounce, it restores the previous mode.  It is
+# initialised to Report (0x01) and updated in shutdown().
+_last_proto = bytearray([1])
 _advertising_state = False
 
 # --------------------------
@@ -989,6 +998,14 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
     dis = DeviceInfoService()
     bas = BatteryService(initial_level=100)
     hid = HIDService()
+    # Restore the previous protocol mode (Report vs Boot).  Some centrals
+    # switch to Boot mode during pairing and expect it to persist.  Without
+    # restoring, BlueZ will default to Report mode after a restart which can
+    # cause input reports to be ignored by the host.  See _last_proto above.
+    try:
+        hid._proto[:] = _last_proto
+    except Exception:
+        pass
 
     global _hid_service_singleton
     _hid_service_singleton = hid
@@ -1126,6 +1143,14 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
         # Release any active HID reports so the host sees no stuck keys
         with contextlib.suppress(Exception):
             hid.release_all()
+
+        # Persist the current protocol mode so it can be restored on next
+        # startup.  Use a slice copy to avoid aliasing shared memory.
+        global _last_proto
+        try:
+            _last_proto = bytearray(hid._proto)
+        except Exception:
+            pass
 
         hid._link_ready = False
 
