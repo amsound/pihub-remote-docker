@@ -151,12 +151,20 @@ class HIDTransportBLE:
 
     def notify_keyboard(self, report: bytes) -> None:
         """
-        Send an 8-byte keyboard report.
-        Primary: Report-mode Keyboard Input (0x2A4D). RID is provided via Report Ref descriptor.
-        Optional: Boot Keyboard Input (0x2A22) if SEND_BOTH_KB=True.
+        Send an 8‑byte keyboard report if the HID link is ready.
+
+        Primary: Report‑mode Keyboard Input (0x2A4D).  RID is provided via Report
+        Ref descriptor.  Optionally send on Boot Keyboard Input (0x2A22) if
+        ``SEND_BOTH_KB`` is True.
+
+        We gate sending on the HID service’s `_link_ready` flag to avoid
+        delivering reports while the central has not yet subscribed to
+        notifications or completed service discovery.  Without this check
+        reports may be silently discarded by BlueZ or the remote host.
         """
         svc = self._hid_service
-        if not svc:
+        # Abort early if the HID service isn’t available or the link isn’t ready
+        if not svc or not getattr(svc, "_link_ready", False):
             return
 
         rep = getattr(svc, "input_keyboard", None)
@@ -182,10 +190,15 @@ class HIDTransportBLE:
 
     def notify_consumer(self, usage_id: int, pressed: bool) -> None:
         """
-        Send 2-byte Consumer Control usage via Report-mode Consumer Input (0x2A4D, RID=2).
+        Send a 2‑byte Consumer Control usage via the report‑mode Consumer Input
+        characteristic (0x2A4D, RID=2), if the HID link is ready.
+
+        We gate sending on `_link_ready` to avoid sending usages before the
+        central has subscribed to notifications.
         """
         svc = self._hid_service
-        if not svc:
+        # Abort early if the HID service isn’t available or the link isn’t ready
+        if not svc or not getattr(svc, "_link_ready", False):
             return
 
         payload = (usage_id if pressed else 0).to_bytes(2, "little")
