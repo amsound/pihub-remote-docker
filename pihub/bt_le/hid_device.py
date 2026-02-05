@@ -1021,16 +1021,24 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
 
     async def shutdown():
         """Cleanly tear down the BLE HID service and notify connected peers."""
-        # cancel the watch_link tasks
+        # Cancel the link watcher and any child tasks, allowing them to exit gracefully
         for t in list(tasks):
             t.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*tasks, return_exceptions=True)
     
-        # proactively disconnect any connected peers
+        # Best‑effort disconnect any connected Device1 peers.
         try:
             for path in list(runtime.connected_devices):
                 try:
+                    # Resolve the device’s address for logging
+                    try:
+                        label_addr = await _get_device_address(bus, path) or "unknown"
+                    except Exception:
+                        label_addr = "unknown"
+                    # Log that we’re performing a clean shutdown for this peer
+                    logger.info("[hid] disconnected %s (clean shutdown)", label_addr)
+                    # Perform the actual disconnect
                     xml = await bus.introspect("org.bluez", path)
                     dev_obj = bus.get_proxy_object("org.bluez", path, xml)
                     dev_iface = dev_obj.get_interface("org.bluez.Device1")
