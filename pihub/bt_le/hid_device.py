@@ -989,6 +989,27 @@ async def start_hid(config) -> tuple[HidRuntime, callable]:
     await ensure_controller_baseline(bus, adapter_name, adapter_proxy=proxy)
     await adapter.set_alias(device_name)
 
+    # On some platforms repeated bluetoothd restarts leave the adapter in a
+    # half-initialised state where centrals remain logically connected but no
+    # longer resend CCCD subscriptions or HID control point messages.  To
+    # reset the controller completely, power-cycle it at startup.  This
+    # toggles the adapter off and back on, ensuring BlueZ and the controller
+    # reinitialise cleanly.  A short delay between off/on avoids hitting
+    # hardware too quickly.  After power-cycling, reassert the baseline
+    # settings and alias again.  Note: this is a no-op on controllers that
+    # cannot be powered off via DBus.
+    try:
+        await adapter.set_powered(False)
+        await asyncio.sleep(0.4)
+        await adapter.set_powered(True)
+        await asyncio.sleep(0.8)
+    except Exception:
+        pass
+    # Reapply baseline (pairable/discoverable) and alias after a power cycle.
+    await ensure_controller_baseline(bus, adapter_name, adapter_proxy=proxy)
+    with contextlib.suppress(Exception):
+        await adapter.set_alias(device_name)
+
     # Agent
     agent = NoIoAgent()
     await agent.register(bus, default=True)
