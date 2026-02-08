@@ -7,7 +7,7 @@ from typing import Iterable, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MS_WHITELIST: Sequence[int] = (0, 40, 80, 100, 500, 2000)
+DEFAULT_MS_WHITELIST: Sequence[int] = (0, 40, 80, 100, 500, 1000, 1500, 2000)
 
 
 def _ctx(context: str) -> str:
