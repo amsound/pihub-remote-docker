@@ -85,7 +85,6 @@ class Dispatcher:
         self._activity = text
         if (prior is None) != (text is None):
             self._activity_none_logged = False
-
     # USB edges come from UnifyingReader
     async def on_usb_edge(self, rem_key: str, edge: str) -> None:
         """Handle a key edge originating from the USB receiver."""
@@ -97,16 +96,8 @@ class Dispatcher:
             )
             self._activity_none_logged = True
 
-        if edge == "down":
-            # start timing window for this key
-            self._pressed_at[rem_key] = loop.time()
-            # cancel any stale hold-tasks from previous cycles
-            await self._cancel_hold_tasks(rem_key)
-
-        elif edge == "up":
-            # stop any repeat and cancel pending hold triggers
-            await self._stop_repeat(rem_key)
-            await self._cancel_hold_tasks(rem_key)
+        if not await self._update_press_state(rem_key, edge, loop):
+            return
 
         actions = (self._bindings.get(self._activity, {}) or {}).get(rem_key, [])
         # enumerate actions so we can key per-action hold tasks
@@ -116,6 +107,29 @@ class Dispatcher:
         # clear press timestamp on full release
         if edge == "up":
             self._pressed_at.pop(rem_key, None)
+
+    async def _update_press_state(
+        self,
+        rem_key: str,
+        edge: str,
+        loop: asyncio.AbstractEventLoop,
+    ) -> bool:
+        """Update per-key edge state (press timing + repeat/hold cancellation)."""
+        if edge == "down":
+            # start timing window for this key
+            self._pressed_at[rem_key] = loop.time()
+            # cancel any stale hold-tasks from previous cycles
+            await self._cancel_hold_tasks(rem_key)
+            return True
+
+        if edge == "up":
+            # stop any repeat and cancel pending hold triggers
+            await self._stop_repeat(rem_key)
+            await self._cancel_hold_tasks(rem_key)
+            return True
+
+        return False
+
 
     async def on_usb_disconnect(self) -> None:
         """Handle USB disconnects to prevent stuck repeats."""
@@ -208,7 +222,6 @@ class Dispatcher:
         for t in tasks:
             with suppress(asyncio.CancelledError):
                 await t
-
     # ---- Action executor ----
     async def _do_action(
         self,
@@ -228,73 +241,91 @@ class Dispatcher:
         if kind != "ble" and edge != when:
             return
 
-        # ---- BLE: edge-accurate, never repeat ----
         if kind == "ble":
-            usage = a.get("usage")
-            code  = a.get("code")
-            if not (isinstance(usage, str) and isinstance(code, str)):
-                return
-            if edge == "down":
-                self._bt.key_down(usage=usage, code=code)
-            elif edge == "up":
-                self._bt.key_up(usage=usage, code=code)
+            await self._handle_ble_action(a, edge)
             return
 
-        # ---- WS emit (supports min_hold_ms + repeat) ----
         if kind == "emit":
-            text = a.get("text")
-            if not isinstance(text, str):
-                return
-
-            extras = {k: v for k, v in a.items() if k not in {"do", "when", "text", "repeat", "min_hold_ms"}}
-            want_repeat = bool(a.get("repeat"))
-            min_hold_ms = parse_ms(
-                a.get("min_hold_ms"),
-                default=0,
-                min=0,
-                max=5000,
-                allow_none=False,
-                context="keymap.min_hold_ms",
-            ) or 0
-
-            loop = asyncio.get_running_loop()
-
-            # when == "up": fire on release; if min_hold_ms > 0, enforce press duration
-            if when == "up" and edge == "up":
-                if min_hold_ms > 0 and rem_key:
-                    t0 = self._pressed_at.get(rem_key)
-                    if t0 is None:
-                        return
-                    elapsed_ms = int((loop.time() - t0) * 1000.0)
-                    if elapsed_ms < min_hold_ms:
-                        return
-                await self._send_with_log(text=text, **extras)
-                # no repeat on 'up'-triggered emits
-                return
-
-            # when == "down": fire on press; if min_hold_ms > 0, delay until threshold
-            if when == "down" and edge == "down":
-                if min_hold_ms > 0 and rem_key is not None:
-                    await self._schedule_hold_emit(
-                        rem_key=rem_key,
-                        action_index=action_index,
-                        min_hold_ms=min_hold_ms,
-                        text=text,
-                        extras=extras,
-                        want_repeat=want_repeat,
-                    )
-                    return
-                # immediate fire + optional repeat
-                await self._send_with_log(text=text, **extras)
-                if want_repeat and rem_key:
-                    await self._start_repeat(rem_key, text, extras)
-                return
-
-            # any other combination -> ignore
+            await self._handle_emit_action(a, edge, rem_key=rem_key, action_index=action_index)
             return
 
         # Unknown action -> ignore
         return
+
+    async def _handle_ble_action(self, a: dict, edge: str) -> None:
+        """Handle edge-accurate BLE actions (never repeat)."""
+        usage = a.get("usage")
+        code = a.get("code")
+        if not (isinstance(usage, str) and isinstance(code, str)):
+            return
+
+        if edge == "down":
+            self._bt.key_down(usage=usage, code=code)
+        elif edge == "up":
+            self._bt.key_up(usage=usage, code=code)
+
+    async def _handle_emit_action(
+        self,
+        a: dict,
+        edge: str,
+        *,
+        rem_key: Optional[str],
+        action_index: int,
+    ) -> None:
+        """Handle Home Assistant emit actions (supports min_hold_ms + repeat)."""
+        text = a.get("text")
+        if not isinstance(text, str):
+            return
+
+        extras = {k: v for k, v in a.items() if k not in {"do", "when", "text", "repeat", "min_hold_ms"}}
+        want_repeat = bool(a.get("repeat"))
+        min_hold_ms = parse_ms(
+            a.get("min_hold_ms"),
+            default=0,
+            min=0,
+            max=5000,
+            allow_none=False,
+            context="keymap.min_hold_ms",
+        ) or 0
+
+        loop = asyncio.get_running_loop()
+        when = a.get("when", "down")
+
+        # when == "up": fire on release; if min_hold_ms > 0, enforce press duration
+        if when == "up" and edge == "up":
+            if min_hold_ms > 0 and rem_key:
+                t0 = self._pressed_at.get(rem_key)
+                if t0 is None:
+                    return
+                elapsed_ms = int((loop.time() - t0) * 1000.0)
+                if elapsed_ms < min_hold_ms:
+                    return
+            await self._send_with_log(text=text, **extras)
+            # no repeat on 'up'-triggered emits
+            return
+
+        # when == "down": fire on press; if min_hold_ms > 0, delay until threshold
+        if when == "down" and edge == "down":
+            if min_hold_ms > 0 and rem_key is not None:
+                await self._schedule_hold_emit(
+                    rem_key=rem_key,
+                    action_index=action_index,
+                    min_hold_ms=min_hold_ms,
+                    text=text,
+                    extras=extras,
+                    want_repeat=want_repeat,
+                )
+                return
+            # immediate fire + optional repeat
+            await self._send_with_log(text=text, **extras)
+            if want_repeat and rem_key:
+                await self._start_repeat(rem_key, text, extras)
+            return
+
+        # any other combination -> ignore
+        return
+
+    # ---- Keymap loader ----
 
     # ---- Keymap loader ----
     def _load_keymap(self) -> dict:
