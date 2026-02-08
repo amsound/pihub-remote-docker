@@ -161,23 +161,48 @@ async def main() -> None:
     ws_task = asyncio.create_task(ws.start(), name="ha_ws")
     ws_task.add_done_callback(_monitor_ws)
 
-    await bt.start()
-    if not await bt.wait_ready(timeout=5.0):
-        logger.warning("[app] BLE adapter not yet available; continuing without HID")
-    await reader.start()
-    await health.start()
+    # Track started subsystems so we can always shut down cleanly (even if startup fails).
+    # Stop order should generally be reverse of start order.
+    started = []  # list[tuple[str, callable]]
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        with contextlib.suppress(Exception):
-            asyncio.get_running_loop().add_signal_handler(sig, stop.set)
-    await stop.wait()
+    try:
+        await bt.start()
+        started.append(("bt", bt.stop))
 
-    await reader.stop()
-    await health.stop()
-    await ws.stop()
-    with contextlib.suppress(Exception, asyncio.CancelledError):
-        await ws_task
-    await bt.stop()
+        if not await bt.wait_ready(timeout=5.0):
+            logger.warning("[app] BLE adapter not yet available; continuing without HID")
+
+        await reader.start()
+        started.append(("reader", reader.stop))
+
+        await health.start()
+        started.append(("health", health.stop))
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(Exception):
+                asyncio.get_running_loop().add_signal_handler(sig, stop.set)
+
+        await stop.wait()
+
+    finally:
+        # Ensure we signal the ws monitor not to re-trigger shutdown while we're already stopping.
+        stop.set()
+
+        # Stop subsystems in reverse start order.
+        for _name, stopper in reversed(started):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await stopper()
+
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await ws.stop()
+
+        # Always await the websocket task so exceptions get surfaced in logs,
+        # but don't let it hang shutdown.
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            if not ws_task.done():
+                ws_task.cancel()
+            await ws_task
+
 
 
 if __name__ == "__main__":
