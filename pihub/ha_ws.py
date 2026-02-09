@@ -172,119 +172,124 @@ class HAWS:
             raise exc
         if msg.get("type") != "auth_ok":
             raise RuntimeError(f"auth failed: {msg}")
-    async def _recv_json_with_timeout(
-        self,
-        ws: aiohttp.ClientWebSocketResponse,
-        *,
-        timeout_s: float,
-    ) -> dict:
-        """Receive a JSON message with timeout (no logging; callers preserve semantics)."""
-        return await asyncio.wait_for(ws.receive_json(), timeout=timeout_s)
 
     async def _seed_activity(self, ws: aiohttp.ClientWebSocketResponse) -> None:
-        """Fetch the current state of the activity entity so we start consistent."""
-        if self._stopping.is_set():
-            return
+        """
+        Fetch current activity once; ALWAYS print + callback, then cache.
+        Why: ensure we resync after reconnects without relying on missed events.
+        """
+        req_id = self._next_id()
+        await ws.send_json({"id": req_id, "type": "get_states"})
+        while True:
+            if self._stopping.is_set():
+                return
+            try:
+                msg = await asyncio.wait_for(ws.receive_json(), timeout=WS_RECV_TIMEOUT_S)
+            except asyncio.TimeoutError as exc:
+                logger.warning("[ws] seed timeout waiting for get_states (timeout=%.1fs)", WS_RECV_TIMEOUT_S)
+                raise exc
+            if msg.get("type") == "result" and msg.get("id") == req_id and msg.get("success"):
+                states = msg.get("result") or []
+                found = False
+                for st in states:
+                    if st.get("entity_id") == self._activity_entity:
+                        found = True
+                        val = self._normalize_activity_state(st.get("state"))
+                        await self._apply_activity(val)
+                        break
+                if not found:
+                    await self._apply_activity(None)
+                return
+            # ignore interleaved messages until our result arrives
 
+    async def _subscribe(self, ws: aiohttp.ClientWebSocketResponse, event_type: str) -> None:
+        req_id = self._next_id()
+        await ws.send_json({"id": req_id, "type": "subscribe_events", "event_type": event_type})
+        await self._await_result(ws, req_id, context=f"subscribe_events:{event_type}")
+
+    async def _subscribe_trigger_entity(self, ws: aiohttp.ClientWebSocketResponse, entity_id: str) -> None:
+        """
+        Server-side filter: only deliver state changes for this entity.
+        """
         req_id = self._next_id()
         await ws.send_json({
             "id": req_id,
-            "type": "get_states",
+            "type": "subscribe_trigger",
+            "trigger": {
+                "platform": "state",
+                "entity_id": entity_id,
+            },
         })
-        try:
-            msg = await self._recv_json_with_timeout(ws, timeout_s=WS_RECV_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            logger.warning("[ws] timeout seeding activity entity")
-            return
+        await self._await_result(ws, req_id, context=f"subscribe_trigger:{entity_id}")
+        # Note: HA replies with a result, then sends trigger matches as events with
+        # event.variables.trigger.{from_state,to_state}. (Docs show 'type: event' payload.)  # noqa: E501
 
-        if msg.get("type") == "result" and msg.get("id") == req_id and msg.get("success"):
-            states = msg.get("result") or []
-            for st in states:
-                if st.get("entity_id") == self._activity_entity:
-                    new_state = self._normalize_activity_state((st.get("state") or "").strip())
-                    await self._apply_activity(new_state)
-                    return
+    def _extract_trigger_states(self, ev: dict) -> tuple[Optional[dict], Optional[dict]]:
+        """
+        Return (from_state, to_state) from common subscribe_trigger shapes.
+        Why: HA docs/examples differ between versions; be tolerant.
+        """
+        vars_ = ev.get("variables") or {}
+        trig = vars_.get("trigger") or {}
+        if not trig and "data" in ev:
+            # Some builds place trigger info in data; keep backward-friendly.
+            trig = (ev.get("data") or {}).get("trigger") or {}
+        from_state = trig.get("from_state") or (ev.get("data") or {}).get("from_state")
+        to_state = trig.get("to_state") or (ev.get("data") or {}).get("to_state")
+        return from_state, to_state
+
     async def _recv_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
-        """Receive loop: parse → route trigger/cmd events; reconnect on errors."""
         while not self._stopping.is_set():
-            try:
-                msg = await self._recv_json_with_timeout(ws, timeout_s=WS_RECV_TIMEOUT_S)
-            except asyncio.TimeoutError:
-                logger.debug("[ws] recv timeout; reconnecting")
-                break
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug("[ws] receive error; reconnecting", exc_info=True)
-                break
+            msg = await ws.receive()
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                except Exception:
+                    continue
 
-            if msg.get("type") == "event":
-                ev = msg.get("event") or {}
-                res = self._handle_event_message(ev)
-                if asyncio.iscoroutine(res):
-                    await res
-                continue
+                if data.get("type") == "event":
+                    ev = data.get("event") or {}
+                    ev_type = ev.get("event_type")
+                    edata = dict(ev.get("data") or {})
 
-            if msg.get("type") in {"auth_required", "auth_ok", "result"}:
-                continue
+                    # 1) Triggered state change for our one entity (subscribe_trigger).
+                    #    No need to re-check entity_id, but do it defensively.
+                    from_state, to_state = self._extract_trigger_states(ev)
+                    if to_state is not None:
+                        ent = to_state.get("entity_id") or (from_state or {}).get("entity_id")
+                        if not ent or ent == self._activity_entity:
+                            new_state = self._normalize_activity_state(to_state.get("state"))
+                            await self._apply_activity(new_state)
+                            continue  # already handled
 
-    async def _handle_event_message(self, ev: dict) -> None:
-        if not isinstance(ev, dict):
-            return
-        ev_type = ev.get("event_type")
-        edata = ev.get("data") or {}
-        if not isinstance(edata, dict):
-            edata = {}
+                    # 2) Your custom command events (unchanged).
+                    if ev_type == self._event_name:
+                        if edata.get("dest") == "pi":
+                            t = edata.get("text", "?")
+                            if t == "macro":
+                                logger.debug("[cmd] macro %s", edata.get("name", "?"))
+                            elif t == "ble_key":
+                                hold_ms = parse_ms_whitelist(
+                                    edata.get("hold_ms"),
+                                    allowed=DEFAULT_MS_WHITELIST,
+                                    default=40,
+                                    context="ha_ws.hold_ms",
+                                )
+                                edata["hold_ms"] = hold_ms
+                                logger.debug(
+                                    "[cmd] ble_key %s/%s hold=%sms",
+                                    edata.get("usage", "?"),
+                                    edata.get("code", "?"),
+                                    hold_ms,
+                                )
+                            else:
+                                logger.debug("[cmd] %s", t)
+                            res = self._on_cmd(edata)
+                            if asyncio.iscoroutine(res):
+                                await res
 
-        if await self._handle_trigger_event(ev_type, edata):
-            return
-
-        await self._handle_cmd_event(ev_type, edata)
-
-    async def _handle_trigger_event(self, ev_type: Any, edata: dict) -> bool:
-        """Return True if handled as activity trigger event."""
-        if ev_type != "trigger":
-            return False
-        if edata.get("platform") != "state":
-            return False
-        if edata.get("entity_id") != self._activity_entity:
-            return False
-
-        new_state = self._normalize_activity_state(edata.get("to_state"))
-        await self._apply_activity(new_state)
-        return True
-
-    async def _handle_cmd_event(self, ev_type: Any, edata: dict) -> None:
-        """Handle custom command events addressed to the Pi."""
-        if ev_type != self._event_name:
-            return
-        if edata.get("dest") != "pi":
-            return
-
-        t = edata.get("text", "?")
-        if t == "macro":
-            logger.debug("[cmd] macro %s", edata.get("name", "?"))
-        elif t == "ble_key":
-            hold_ms = parse_ms_whitelist(
-                edata.get("hold_ms"),
-                allowed=DEFAULT_MS_WHITELIST,
-                default=40,
-                context="ha_ws.hold_ms",
-            )
-            edata["hold_ms"] = hold_ms
-            logger.debug(
-                "[cmd] ble_key %s/%s hold=%sms",
-                edata.get("usage", "?"),
-                edata.get("code", "?"),
-                hold_ms,
-            )
-        else:
-            logger.debug("[cmd] %s", t)
-
-        res = self._on_cmd(edata)
-        if asyncio.iscoroutine(res):
-            await res
-
+            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                break  # reconnect
 
     def _next_id(self) -> int:
         i = self._msg_id
@@ -312,6 +317,7 @@ class HAWS:
         res = self._on_activity(new_state)
         if asyncio.iscoroutine(res):
             await res
+
     async def _await_result(
         self,
         ws: aiohttp.ClientWebSocketResponse,
@@ -323,7 +329,7 @@ class HAWS:
             if self._stopping.is_set():
                 return
             try:
-                msg = await self._recv_json_with_timeout(ws, timeout_s=WS_RECV_TIMEOUT_S)
+                msg = await asyncio.wait_for(ws.receive_json(), timeout=WS_RECV_TIMEOUT_S)
             except asyncio.TimeoutError as exc:
                 logger.warning(
                     "[ws] timeout waiting for %s result (timeout=%.1fs)",
@@ -331,13 +337,11 @@ class HAWS:
                     WS_RECV_TIMEOUT_S,
                 )
                 raise exc
-
             if msg.get("type") == "result" and msg.get("id") == req_id:
                 if msg.get("success"):
                     return
                 logger.error("[ws] %s failed: %s", context, msg)
                 raise RuntimeError(f"{context} failed: {msg}")
-
 
     async def _close_ws(self) -> None:
         ws, self._ws = self._ws, None
