@@ -48,4 +48,4 @@ COPY pihub ./pihub
 # COPY config ./config
 
 # Entrypoint
-CMD ["python", "-m", "pihub.app"]
+CMD ["/opt/venv/bin/python", "-m", "pihub.app"]
